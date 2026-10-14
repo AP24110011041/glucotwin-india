@@ -1,7 +1,11 @@
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from src.synth_data import SYNTHETIC_LABEL, generate_synthetic_data
+from src.synth_data import (
+    SYNTHETIC_LABEL,
+    generate_synthetic_data,
+    generate_synthetic_patient_records,
+)
 
 
 def test_generation_is_reproducible() -> None:
@@ -10,6 +14,24 @@ def test_generation_is_reproducible() -> None:
 
     assert_frame_equal(first_patients, second_patients)
     assert_frame_equal(first_series, second_series)
+
+
+def test_synthetic_patient_records_include_baseline_history_and_labs() -> None:
+    first = generate_synthetic_patient_records(n_participants=3, seed=17)
+    second = generate_synthetic_patient_records(n_participants=3, seed=17)
+
+    assert_frame_equal(first, second)
+    assert {
+        "participant_id",
+        "condition",
+        "age_years",
+        "sex",
+        "diabetes_duration_years",
+        "hba1c_percent",
+        "bmi_kg_m2",
+        "synthetic_label",
+    }.issubset(first.columns)
+    assert set(first["synthetic_label"]) == {SYNTHETIC_LABEL}
 
 
 def test_expected_schema_multiple_participants_and_synthetic_labels() -> None:

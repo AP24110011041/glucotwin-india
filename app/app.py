@@ -74,6 +74,24 @@ def _render_overview(summary: dict[str, Any], fixture: pd.DataFrame) -> None:
     st.write(f"- patient folds: {summary.get('fold_count', 0)}")
     st.write(f"- LightGBM parameters: {metadata}")
 
+    input_streams = summary.get("model_input_streams", {})
+    if input_streams:
+        st.markdown("**Combined synthetic model inputs**")
+        st.write(f"- Joined by: {input_streams['join_key']}")
+        st.write(
+            "- Static predictors: "
+            + ", ".join(input_streams["static_predictor_columns"])
+        )
+        st.write(
+            "- Dynamic predictors: "
+            f"{input_streams['dynamic_predictor_count']} features, including "
+            + ", ".join(input_streams["dynamic_predictor_examples"])
+        )
+        st.caption(
+            "Both streams are generated synthetic inputs. No real patient records "
+            "or real-time hardware are connected."
+        )
+
     oof_metrics = {
         "AUROC": metrics.get("auroc"),
         "AUPRC": metrics.get("auprc"),

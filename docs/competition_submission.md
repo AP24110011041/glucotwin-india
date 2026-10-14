@@ -9,15 +9,17 @@ flowchart LR
     Source["Optional local source CSVs"] --> Inspect["src/inspect_data.py"]
     Source --> Engineer["src/feature_engineering.py"]
     Engineer --> LocalFeatures["Local normalized series, features, eligibility summary"]
-    Synthetic["src/run_lopo.py: deterministic in-memory fixture"] --> Runner["Synthetic smoke runner"]
-    Generator["src/synth_data.py: separate synthetic CSV generator"] --> SyntheticFiles["Local synthetic CSVs"]
+    Profiles["src/synth_data.py: synthetic EHR profiles"] --> Join["Join by patient_id"]
+    Dynamic["src/run_lopo.py: 1-minute synthetic CGM, meals, wearables"] --> Join
+    Join --> Runner["Synthetic smoke runner"]
+    Generator["src/synth_data.py: separate 5-minute CSV series"] --> SyntheticFiles["Local synthetic CSVs; not model input"]
     Runner --> Eval["src/evaluation.py: anchors, LOPO, fold-fitted preprocessing, metrics"]
     Eval --> Artifacts["Synthetic OOF CSV and JSON summary on stdout"]
     Artifacts --> Dashboard["app/app.py: Streamlit and Plotly"]
     LocalFeatures -. "Callable evaluation API; no real-data run verified" .-> Eval
 ```
 
-The dataset inspector and feature-engineering command operate on files explicitly supplied by the user. The current LOPO runner does not discover or load these files; it constructs an in-memory synthetic fixture. The dashboard calls that runner and reads only its synthetic output.
+The dataset inspector and feature-engineering command operate on files explicitly supplied by the user. The dashboard runner constructs its own one-minute dynamic fixture, obtains a separate deterministic synthetic profile table from the shared profile generator, and joins static fields to dynamic rows by participant ID before feature generation and LOPO training. It does not read the five-minute CSV series written by `src/synth_data.py`, CGMacros files, or processed real data. No real-time hardware stream is connected.
 
 ## Presentation Outline
 

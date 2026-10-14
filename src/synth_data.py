@@ -32,6 +32,18 @@ def _make_patient_records(
     )
 
 
+def generate_synthetic_patient_records(
+    n_participants: int = 5,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Return deterministic synthetic baseline demographics, history, and labs."""
+    if n_participants < 1:
+        raise ValueError("n_participants must be at least 1")
+    generator = np.random.default_rng(seed)
+    participant_ids = [f"SYN-{index:04d}" for index in range(1, n_participants + 1)]
+    return _make_patient_records(participant_ids, generator)
+
+
 def _make_participant_timeseries(
     participant_id: str,
     timestamps: pd.DatetimeIndex,

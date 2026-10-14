@@ -33,11 +33,13 @@ from src.evaluation import (
     validate_approved_predictors,
 )
 from src.feature_engineering import (
+    STATIC_EHR_COLUMNS,
     TARGET_HORIZON_MINUTES,
     TARGET_THRESHOLD_MG_DL,
     build_features,
 )
 from src.feature_groups import get_predictor_columns
+from src.synth_data import generate_synthetic_patient_records
 
 SUPPORTED_FEATURE_SETS = ("full", "cgm-only")
 SYNTHETIC_LABEL = "SYNTHETIC"
@@ -89,7 +91,19 @@ def generate_synthetic_smoke_fixture(
         raise ValueError("days must be at least 1")
 
     rng = np.random.default_rng(seed)
-    patient_ids = [f"SYN-{index:03d}" for index in range(1, n_participants + 1)]
+    patient_ids = [f"SYN-{index:04d}" for index in range(1, n_participants + 1)]
+    profiles = generate_synthetic_patient_records(
+        n_participants=n_participants, seed=seed
+    ).rename(
+        columns={
+            "participant_id": "patient_id",
+            "condition": "diagnosis",
+            "sex": "gender",
+            "bmi_kg_m2": "bmi",
+            "hba1c_percent": "a1c_pdl_lab",
+        }
+    )
+    profiles_by_patient = profiles.set_index("patient_id")
     samples_per_day = int(24 * 60)
     timestamps = pd.date_range(start=start, periods=days * samples_per_day, freq="1min")
     rows: list[dict[str, Any]] = []
@@ -101,9 +115,11 @@ def generate_synthetic_smoke_fixture(
         circadian = 10.0 * np.sin(2.0 * np.pi * ((elapsed / 12.0) - 7.0) / 24.0)
         meal_effect = np.zeros(len(timestamps), dtype=float)
         meal_hours = [8, 13, 19]
+        meal_offsets: list[int] = []
         for hour in meal_hours:
             offset = int(np.round(hour * 60.0 + rng.uniform(-5.0, 5.0)))
             offset = min(max(offset, 0), len(timestamps) - 1)
+            meal_offsets.append(offset)
             meal_window = slice(offset, min(offset + 24, len(timestamps)))
             meal_effect[meal_window] += 25.0 * np.linspace(0.1, 1.0, len(range(*meal_window.indices(len(timestamps)))))
         high_segments = np.zeros(len(timestamps), dtype=float)
@@ -139,6 +155,18 @@ def generate_synthetic_smoke_fixture(
         meal_sugar_g = np.zeros(len(timestamps), dtype=float)
         meal_amount_consumed_pct = np.zeros(len(timestamps), dtype=float)
         meal_type = [None] * len(timestamps)
+        for offset, meal_name in zip(
+            meal_offsets, ("breakfast", "lunch", "dinner"), strict=True
+        ):
+            meal_calories[offset] = float(rng.integers(300, 701))
+            meal_carbs_g[offset] = float(rng.integers(30, 91))
+            meal_protein_g[offset] = float(rng.integers(10, 36))
+            meal_fat_g[offset] = float(rng.integers(8, 31))
+            meal_fiber_g[offset] = float(rng.integers(2, 13))
+            meal_sugar_g[offset] = float(rng.integers(3, 26))
+            meal_amount_consumed_pct[offset] = float(rng.integers(70, 101))
+            meal_type[offset] = meal_name
+        static_profile = profiles_by_patient.loc[patient_id]
 
         for sample_index, (timestamp, value) in enumerate(
             zip(timestamps, glucose, strict=True)
@@ -171,6 +199,14 @@ def generate_synthetic_smoke_fixture(
                     "dexcom_missing": 1,
                     "synthetic_label": SYNTHETIC_LABEL,
                     "target": float(target[sample_index]),
+                    "age_years": int(static_profile["age_years"]),
+                    "gender": str(static_profile["gender"]),
+                    "diagnosis": str(static_profile["diagnosis"]),
+                    "diabetes_duration_years": int(
+                        static_profile["diabetes_duration_years"]
+                    ),
+                    "bmi": float(static_profile["bmi"]),
+                    "a1c_pdl_lab": float(static_profile["a1c_pdl_lab"]),
                 }
             )
 
@@ -207,6 +243,10 @@ def _build_oof_predictions(
         approved_predictors=feature_columns,
     )
     effective_parameters = _effective_lightgbm_parameters(seed=seed, lightgbm_parameters=lightgbm_parameters)
+    static_source_columns = set(STATIC_EHR_COLUMNS)
+    static_feature_columns = static_source_columns.union(
+        {f"{column}_missing" for column in STATIC_EHR_COLUMNS}
+    )
 
     folds = iter_lopo_folds(evaluation_data.rows)
     records: list[dict[str, Any]] = []
@@ -261,6 +301,12 @@ def _build_oof_predictions(
         "feature_set": feature_set,
         "fold_count": len(folds),
         "lightgbm_parameters": effective_parameters,
+        "static_predictor_columns": [
+            column for column in feature_columns if column in static_feature_columns
+        ],
+        "dynamic_predictor_columns": [
+            column for column in feature_columns if column not in static_feature_columns
+        ],
         "eligible_anchor_count": int(len(oof)),
         "positive_anchor_count": int(oof["y_true"].sum()),
         "negative_anchor_count": int((oof["y_true"] == 0).sum()),
@@ -380,6 +426,14 @@ def run_smoke_test(
         "synthetic_label": SYNTHETIC_LABEL,
         "seed": seed,
         "feature_set": feature_set,
+        "model_input_streams": {
+            "join_key": "patient_id",
+            "static_predictor_columns": summary["static_predictor_columns"],
+            "dynamic_predictor_count": len(summary["dynamic_predictor_columns"]),
+            "dynamic_predictor_examples": summary["dynamic_predictor_columns"][:8],
+            "static_stream": "Synthetic demographics, diagnosis, diabetes duration, BMI, and HbA1c per participant.",
+            "dynamic_stream": "Synthetic 1-minute Libre, meals, heart rate, and activity inputs; no hardware connection.",
+        },
         "fold_count": summary["fold_count"],
         "lightgbm_parameters": summary["lightgbm_parameters"],
         "eligible_anchor_count": summary["eligible_anchor_count"],

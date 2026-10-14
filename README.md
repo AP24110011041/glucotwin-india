@@ -4,6 +4,19 @@ An early research prototype for a Type 2 diabetes digital twin, prepared for the
 
 **SYNTHETIC RESEARCH DEMO — NOT FOR CLINICAL USE**
 
+## Team and Institutional Details
+
+- Project: GlucoTwin India
+- Team name: mathin7225
+- Team size: 2 members
+- Team leader: Shaik Mahammad Mathin — SRM University AP
+- Teammate: Shaik Sameera Kowsar — Tirumala Engineering College
+- Incubator: [ADD VERIFIED INCUBATOR NAME OR `None`]
+
+## Healthcare Use Case
+
+Explore, for research and education only, whether timestamped glucose and contextual signals could support forecasting an observed Libre glucose value above 180 mg/dL in the next two hours. This is not a care workflow, medical device, diagnosis, treatment recommendation, or clinically validated system.
+
 ## Problem Statement
 
 Explore whether longitudinal Libre glucose, meal, wearable, and clinical data can support prediction of whether Libre glucose will exceed 180 mg/dL during the next two hours. This repository is a research software prototype; its dashboard trains on synthetic data only, and no real-participant predictive performance is claimed.
@@ -62,11 +75,40 @@ Uncertainty uses a deterministic participant-level bootstrap of per-patient anch
 - `src/inspect_data.py` reads local CSVs and reports schema, missingness, participant-like identifiers, domains, and timestamp intervals.
 - `src/feature_engineering.py` normalizes participant CSVs, joins static EHR fields by participant ID, creates past-only features and Libre-only future labels, and writes local processed outputs.
 - `src/evaluation.py` selects patient-relative anchors, validates an explicit predictor allow-list, makes one whole patient the test set per LOPO fold, and fits preprocessing inside each training fold.
-- `src/run_lopo.py` runs a deterministic synthetic smoke evaluation, writes synthetic OOF predictions, and prints baseline and metric summaries as JSON to stdout. It does not load CGMacros or processed real data.
+- `src/run_lopo.py` joins synthetic participant-level demographics, diagnosis, diabetes duration, BMI, and HbA1c with its generated one-minute Libre, meal, and wearable/activity fixture by `patient_id`. The combined synthetic features are passed to each fold's LightGBM predictor. It writes synthetic OOF predictions and prints baseline and metric summaries as JSON to stdout; it does not load CGMacros or processed real data.
 - `app/app.py` is a working Streamlit dashboard with Overview, OOF Explorer, Model Diagnostics, and Synthetic Glucose Timeline sections. Its data source is the synthetic smoke runner only.
 - `data/processed/`, `models/`, and `app/synthetic_demo/synthetic_oof_predictions.csv` are local outputs and are excluded from Git. `notebooks/` and `reports/` currently contain placeholders only.
 
 The current implementation uses Python, NumPy, pandas, scikit-learn pipelines/metrics, LightGBM, Streamlit, and Plotly. `requirements.txt` also declares packages reserved for broader work; the current source does not directly import SHAP, SciPy, Matplotlib, or Requests. See the editable [architecture and submission notes](docs/competition_submission.md) for the data-flow diagram and evidence checklist.
+
+## Technical Stack
+
+Python; pandas and NumPy for data handling; scikit-learn for fold-fitted preprocessing and metrics; LightGBM for classification; Streamlit and Plotly for the synthetic research dashboard; Matplotlib for the generated submission PDFs; pytest for regression tests. The project requirements also include optional packages for other repository tools.
+
+## AI/ML Model
+
+The synthetic dashboard smoke path uses a LightGBM classifier (75 estimators, learning rate 0.08, max depth 3, 15 leaves). Each LOPO fold holds out one complete synthetic participant. Numeric median imputation and categorical imputation/one-hot encoding are fitted within that fold's training data. The forecast cutoff is fixed at 0.5; there is no threshold tuning or fitted calibration. This describes software behavior only and is not a real-patient model result.
+
+## Demo Video
+
+YouTube unlisted demo, minimum 20 minutes: **[ADD THE ACTUAL UNLISTED YOUTUBE URL]**. Record the actual prototype, set the video to unlisted, verify the duration is at least 20 minutes, and test the link while signed out. No video or URL is included in this checkout.
+
+## License
+
+The [MIT License](LICENSE) is prepared for original project code and materials only. Its copyright-holder field is a placeholder and must be confirmed before publication. The project license does not grant rights to CGMacros or any other third-party data, trademarks, or dependencies; those remain under their respective terms. Confirm dataset rights and intended-use restrictions independently before use or redistribution.
+
+## Competition Deliverables
+
+- Architecture diagram: [PDF](docs/architecture_diagram.pdf)
+- Project presentation: [PDF](docs/presentation.pdf)
+- Requirement-by-requirement audit and remaining actions: [submission requirements audit](docs/submission_requirements_audit.md)
+- Source and reproducible PDF generator: [PDF generator](docs/generate_submission_pdfs.py)
+
+The presentation's numerical results are from a deterministic synthetic smoke run (seed 42, 4 synthetic participants, 2 synthetic days, 1,104 eligible anchors). They are not real-patient evidence. These files are local/uncommitted in this working tree; after owner review and publication, verify every link from a signed-out browser to meet the public-access requirement.
+
+## Submission Folder Name
+
+The required submission folder name is `mathin7225_SRM University AP`. This instruction does not rename the existing Git repository.
 
 ## Setup
 
@@ -96,7 +138,7 @@ From the repository root, launch the demo:
 .\.venv\Scripts\python.exe -m streamlit run app/app.py --server.headless true --server.port 8501
 ```
 
-The dashboard always uses a deterministic synthetic bundle stored under `app/synthetic_demo/` and labels outputs as `SYNTHETIC` throughout the interface. It is for software validation, UI prototyping, and demonstration only.
+The dashboard always uses a deterministic synthetic bundle stored under `app/synthetic_demo/`, shows the participant-ID join and static/dynamic model inputs, and labels outputs as `SYNTHETIC` throughout the interface. The static profile generator is shared with `src/synth_data.py`; that script's separate five-minute CSV time series is not the dashboard model input. No real-time hardware or CGMacros stream is connected. This is for software validation, UI prototyping, and demonstration only.
 Generate a small, deterministic synthetic example (the command overwrites the two named output files):
 
 ```powershell

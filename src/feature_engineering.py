@@ -27,6 +27,9 @@ HEADER_ALIASES = {
     "subject": "subject",
     "age": "age_years",
     "age_years": "age_years",
+    "condition": "diagnosis",
+    "diagnosis": "diagnosis",
+    "diabetes_duration_years": "diabetes_duration_years",
     "gender": "gender",
     "bmi": "bmi",
     "body_weight": "body_weight_lb",
@@ -65,6 +68,8 @@ HEADER_ALIASES = {
 STATIC_EHR_COLUMNS = (
     "age_years",
     "gender",
+    "diagnosis",
+    "diabetes_duration_years",
     "bmi",
     "body_weight_lb",
     "height_in",
@@ -276,7 +281,7 @@ def load_static_ehr(path: Path) -> pd.DataFrame:
         raise ValueError("bio.csv contains no recognized baseline static clinical fields")
     static = bio[["patient_id", *available_static]].copy()
     for column in available_static:
-        if column not in {"gender", "self_identify"}:
+        if column not in {"gender", "self_identify", "diagnosis"}:
             static[column] = pd.to_numeric(static[column], errors="coerce")
     return static
 

@@ -26,6 +26,12 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         and "NOT FOR CLINICAL USE" in element.value
         for element in app.markdown
     )
+    assert any(
+        "Combined synthetic model inputs" in element.value
+        for element in app.markdown
+    )
+    assert any("Static predictors:" in element.value for element in app.markdown)
+    assert any("Dynamic predictors:" in element.value for element in app.markdown)
     assert len(app.get("plotly_chart")) == 5
     assert any(
         element.value.iloc[0]["Forecast"] == "Training-fold majority"

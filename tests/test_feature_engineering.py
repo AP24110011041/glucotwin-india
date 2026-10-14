@@ -349,6 +349,30 @@ def test_static_ehr_join_uses_normalized_patient_ids(tmp_path: Path) -> None:
     assert joined["a1c_pdl_lab"].tolist() == [7.0, 6.5, 6.5]
 
 
+def test_static_ehr_preserves_synthetic_diagnosis_and_history_fields(
+    tmp_path: Path,
+) -> None:
+    bio_path = tmp_path / "bio.csv"
+    pd.DataFrame(
+        {
+            "subject": [1],
+            "Condition": ["Type 2 diabetes"],
+            "Diabetes Duration Years": [8],
+            "Age": [45],
+            "Gender": ["F"],
+            "BMI": [25.0],
+            "A1c PDL Lab": [7.2],
+        }
+    ).to_csv(bio_path, index=False)
+
+    static = load_static_ehr(bio_path)
+
+    assert static.loc[0, "diagnosis"] == "Type 2 diabetes"
+    assert static.loc[0, "diabetes_duration_years"] == 8
+    assert static.loc[0, "age_years"] == 45
+    assert static.loc[0, "a1c_pdl_lab"] == 7.2
+
+
 def test_repeated_processing_is_deterministic_and_schema_stable(tmp_path: Path) -> None:
     data_dir = tmp_path / "raw"
     (data_dir / "CGMacros-001").mkdir(parents=True)

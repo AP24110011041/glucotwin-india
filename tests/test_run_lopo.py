@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.feature_engineering import build_features
+from src.synth_data import generate_synthetic_patient_records
 from src.run_lopo import (
     _safe_brier,
     generate_synthetic_smoke_fixture,
@@ -41,6 +42,60 @@ def test_synthetic_fixture_targets_match_production_120_minute_labels() -> None:
             patient_rows["record_index"].to_numpy(),
             np.arange(len(patient_rows)),
         )
+
+
+def test_static_and_dynamic_synthetic_streams_reach_lopo_predictors() -> None:
+    fixture = generate_synthetic_smoke_fixture(seed=31, n_participants=4, days=2)
+    profiles = generate_synthetic_patient_records(
+        n_participants=4, seed=31
+    ).rename(
+        columns={
+            "participant_id": "patient_id",
+            "condition": "diagnosis",
+            "sex": "gender",
+            "bmi_kg_m2": "bmi",
+            "hba1c_percent": "a1c_pdl_lab",
+        }
+    ).set_index("patient_id")
+    _, summary, evaluation_data = _build_oof_predictions(
+        fixture, feature_set="full", seed=31
+    )
+    static_features = {
+        "age_years",
+        "gender",
+        "diagnosis",
+        "diabetes_duration_years",
+        "bmi",
+        "a1c_pdl_lab",
+    }
+    dynamic_features = {
+        "glucose_current_mg_dl",
+        "heart_rate_bpm_current",
+        "meal_carbs_g_sum_15m",
+    }
+
+    assert static_features.issubset(evaluation_data.predictor_columns)
+    assert dynamic_features.issubset(evaluation_data.predictor_columns)
+    assert set(summary["static_predictor_columns"]).issuperset(static_features)
+    assert set(summary["dynamic_predictor_columns"]).issuperset(dynamic_features)
+    assert fixture.groupby("patient_id")["diagnosis"].nunique().eq(1).all()
+    for column in static_features:
+        assert fixture.groupby("patient_id")[column].nunique().eq(1).all()
+    for patient_id, patient_rows in fixture.groupby("patient_id"):
+        assert patient_id in profiles.index
+        for feature, profile_column in (
+            ("age_years", "age_years"),
+            ("gender", "gender"),
+            ("diagnosis", "diagnosis"),
+            ("diabetes_duration_years", "diabetes_duration_years"),
+            ("bmi", "bmi"),
+            ("a1c_pdl_lab", "a1c_pdl_lab"),
+        ):
+            assert patient_rows[feature].iloc[0] == profiles.loc[
+                patient_id, profile_column
+            ]
+    assert fixture["meal_type"].notna().any()
+    assert fixture.loc[fixture["meal_type"].notna(), "meal_carbs_g"].gt(0).all()
 
 
 def test_oof_predictions_are_unique_and_cover_eligible_anchors() -> None:
@@ -120,6 +175,9 @@ def test_cli_smoke_mode_writes_csv_and_summary(tmp_path: Path) -> None:
     assert summary["seed"] == 9
     assert summary["feature_set"] == "full"
     assert summary["fold_count"] == 4
+    assert summary["model_input_streams"]["join_key"] == "patient_id"
+    assert "diagnosis" in summary["model_input_streams"]["static_predictor_columns"]
+    assert summary["model_input_streams"]["dynamic_predictor_count"] > 0
     assert summary["lightgbm_parameters"]["random_state"] == 9
     assert summary["lightgbm_parameters"]["n_estimators"] == 75
     assert summary["eligible_anchor_count"] > 0
