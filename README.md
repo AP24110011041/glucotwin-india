@@ -76,7 +76,17 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
+## Synthetic Dashboard
 
+The Streamlit app is a synthetic research demo only. It does not read CGMacros data, does not require external services or credentials, and must not be used for clinical performance claims.
+
+From the repository root, launch the demo:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/app.py --server.headless true --server.port 8501
+```
+
+The dashboard always uses a deterministic synthetic bundle stored under `app/synthetic_demo/` and labels outputs as `SYNTHETIC` throughout the interface. It is for software validation, UI prototyping, and demonstration only.
 Generate a small, deterministic synthetic example (the command overwrites the two named output files):
 
 ```powershell

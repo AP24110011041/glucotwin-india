@@ -44,3 +44,6 @@ Thumbs.db
 
 # Private audit bundle and duplicated review artifacts
 docs/claude_audit/
+
+# Generated synthetic smoke-test output
+/app/synthetic_demo/synthetic_oof_predictions.csv

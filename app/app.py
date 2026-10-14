@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
+
+from src.run_lopo import generate_synthetic_smoke_fixture, run_smoke_test
+
+APP_TITLE = "GlucoTwin India"
+SYNTHETIC_BANNER = "SYNTHETIC RESEARCH DEMO — NOT FOR CLINICAL USE."
+DEMO_DIR = Path(__file__).resolve().parent / "synthetic_demo"
+
+
+@st.cache_data(show_spinner=False)
+def load_demo_bundle(seed: int = 42, n_participants: int = 4, days: int = 2) -> dict[str, Any]:
+    """Build the deterministic synthetic demo bundle used by the dashboard."""
+    DEMO_DIR.mkdir(parents=True, exist_ok=True)
+    summary = run_smoke_test(
+        output_dir=DEMO_DIR,
+        seed=seed,
+        feature_set="full",
+        n_participants=n_participants,
+        days=days,
+    )
+    oof_path = DEMO_DIR / "synthetic_oof_predictions.csv"
+    oof = pd.read_csv(oof_path)
+    fixture = generate_synthetic_smoke_fixture(seed=seed, n_participants=n_participants, days=days)
+    return {
+        "summary": summary,
+        "oof": oof,
+        "fixture": fixture,
+        "seed": seed,
+        "n_participants": n_participants,
+        "days": days,
+        "synthetic_label": "SYNTHETIC",
+    }
+
+
+def _safe_metric_value(value: Any) -> Any:
+    if value is None:
+        return "Not available"
+    if isinstance(value, (float, np.floating)):
+        return round(float(value), 4)
+    return value
+
+
+def _render_overview(summary: dict[str, Any], fixture: pd.DataFrame) -> None:
+    st.subheader("Overview")
+    st.markdown(f"**{SYNTHETIC_BANNER}**")
+
+    metrics = summary.get("report", {}).get("oof_metrics", {})
+    metadata = summary.get("lightgbm_parameters", {})
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Seed", summary.get("seed", "n/a"))
+    col2.metric("Participants", fixture["patient_id"].nunique())
+    col3.metric("Eligible anchors", summary.get("eligible_anchor_count", 0))
+    col4.metric("Prevalence", _safe_metric_value(metrics.get("positive_prevalence")))
+
+    st.write("Synthetic data status")
+    st.write(f"- synthetic_label: {summary.get('synthetic_label', 'SYNTHETIC')}")
+    st.write(f"- feature_set: {summary.get('feature_set', 'full')}")
+    st.write(f"- patient folds: {summary.get('fold_count', 0)}")
+    st.write(f"- LightGBM parameters: {metadata}")
+
+    oof_metrics = {
+        "AUROC": metrics.get("auroc"),
+        "AUPRC": metrics.get("auprc"),
+        "Brier score": metrics.get("brier_score"),
+    }
+    st.write("Available OOF metrics:")
+    for name, value in oof_metrics.items():
+        st.write(f"- {name}: {_safe_metric_value(value)}")
+
+
+def _render_oof_explorer(oof: pd.DataFrame) -> None:
+    st.subheader("OOF Explorer")
+    if oof.empty:
+        st.info("No OOF rows are available for the current synthetic demo.")
+        return
+
+    patient_options = ["All"] + sorted(oof["patient_id"].astype(str).unique().tolist())
+    selected_patient = st.selectbox("Select patient", patient_options)
+    fold_options = ["All"] + sorted(oof["fold_id"].astype(str).unique().tolist())
+    selected_fold = st.selectbox("Select fold", fold_options)
+
+    filtered = oof.copy()
+    if selected_patient != "All":
+        filtered = filtered[filtered["patient_id"].astype(str) == selected_patient]
+    if selected_fold != "All":
+        filtered = filtered[filtered["fold_id"].astype(str) == selected_fold]
+
+    if filtered.empty:
+        st.info("No rows match the current selection.")
+        return
+
+    display = filtered[["patient_id", "timestamp", "y_true", "y_prob", "y_pred", "fold_id"]].copy()
+    display = display.rename(columns={
+        "patient_id": "Patient",
+        "timestamp": "Timestamp",
+        "y_true": "True label",
+        "y_prob": "Probability",
+        "y_pred": "Thresholded prediction",
+        "fold_id": "Fold ID",
+    })
+    st.dataframe(display, use_container_width=True)
+
+
+def _render_model_diagnostics(oof: pd.DataFrame) -> None:
+    st.subheader("Model Diagnostics")
+    if oof.empty:
+        st.info("No synthetic OOF rows are available.")
+        return
+
+    y_true = oof["y_true"].astype(int)
+    y_prob = pd.to_numeric(oof["y_prob"], errors="coerce")
+
+    if y_true.nunique() < 2:
+        st.warning("Not enough class diversity in this synthetic sample for ROC or PR curves.")
+    else:
+        fpr, tpr, _ = roc_curve(y_true, y_prob)
+        roc_fig = px.line(
+            x=fpr,
+            y=tpr,
+            title="Synthetic ROC curve",
+            labels={"x": "False positive rate", "y": "True positive rate"},
+        )
+        st.plotly_chart(roc_fig, use_container_width=True)
+
+        precision, recall, _ = precision_recall_curve(y_true, y_prob)
+        pr_fig = px.line(
+            x=recall,
+            y=precision,
+            title="Synthetic precision-recall curve",
+            labels={"x": "Recall", "y": "Precision"},
+        )
+        st.plotly_chart(pr_fig, use_container_width=True)
+
+    thresholded = (y_prob >= 0.5).astype(int)
+    cm = confusion_matrix(y_true, thresholded, labels=[0, 1])
+    cm_df = pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Pred 0", "Pred 1"])
+    st.write("Confusion matrix at threshold 0.5")
+    st.dataframe(cm_df, use_container_width=True)
+
+    if y_prob.notna().any():
+        dist = px.histogram(
+            y_prob.dropna().to_frame(name="Probability"),
+            x="Probability",
+            nbins=20,
+            title="Synthetic OOF probability distribution",
+        )
+        st.plotly_chart(dist, use_container_width=True)
+
+
+def _render_synthetic_timeline(fixture: pd.DataFrame) -> None:
+    st.subheader("Synthetic Glucose Timeline")
+    patients = sorted(fixture["patient_id"].astype(str).unique().tolist())
+    if not patients:
+        st.info("No synthetic patient rows are available.")
+        return
+
+    selected_patient = st.selectbox("Participant", patients)
+    patient_frame = fixture[fixture["patient_id"].astype(str) == selected_patient].sort_values("timestamp")
+
+    chart = px.line(
+        patient_frame,
+        x="timestamp",
+        y="libre_gl_mg_dl",
+        title=f"Synthetic glucose history for {selected_patient}",
+        labels={"libre_gl_mg_dl": "Libre glucose (mg/dL)", "timestamp": "Time"},
+    )
+    st.plotly_chart(chart, use_container_width=True)
+    st.caption("This is a synthetic trend only; it is not patient data and not a clinical signal.")
+
+
+def main() -> None:
+    st.set_page_config(page_title="GlucoTwin India Demo", page_icon="🧪")
+    st.title("GlucoTwin India")
+    st.markdown(f"**{SYNTHETIC_BANNER}**")
+
+    with st.sidebar:
+        st.header("Synthetic demo controls")
+        seed = st.number_input("Seed", min_value=0, value=42, step=1)
+        participants = st.number_input("Participants", min_value=2, max_value=12, value=4, step=1)
+        days = st.number_input("Days", min_value=1, max_value=7, value=2, step=1)
+
+    bundle = load_demo_bundle(seed=int(seed), n_participants=int(participants), days=int(days))
+    summary = bundle["summary"]
+    fixture = bundle["fixture"]
+    oof = bundle["oof"]
+
+    _render_overview(summary, fixture)
+    _render_oof_explorer(oof)
+    _render_model_diagnostics(oof)
+    _render_synthetic_timeline(fixture)
+
+
+if __name__ == "__main__":
+    main()
