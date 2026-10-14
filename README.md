@@ -104,7 +104,7 @@ The [MIT License](LICENSE) is prepared for original project code and materials o
 - Requirement-by-requirement audit and remaining actions: [submission requirements audit](docs/submission_requirements_audit.md)
 - Source and reproducible PDF generator: [PDF generator](docs/generate_submission_pdfs.py)
 
-The presentation's numerical results are from a deterministic synthetic smoke run (seed 42, 4 synthetic participants, 2 synthetic days, 1,104 eligible anchors). They are not real-patient evidence. These files are local/uncommitted in this working tree; after owner review and publication, verify every link from a signed-out browser to meet the public-access requirement.
+The presentation's numerical results are from a deterministic synthetic smoke run (seed 42, 4 synthetic participants, 2 synthetic days, 1,104 eligible anchors). They are not real-patient evidence. The architecture and presentation PDFs are tracked in the current Git checkout, but their public accessibility has not been verified. After owner review and approved publication, verify every link from a signed-out browser.
 
 ## Submission Folder Name
 

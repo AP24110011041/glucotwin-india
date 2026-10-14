@@ -229,6 +229,10 @@ def build_feature_table_for_evaluation(normalized_time_series: pd.DataFrame) -> 
     return feature_table
 
 
+def _threshold_predictions(probabilities: np.ndarray) -> np.ndarray:
+    return (probabilities >= 0.5).astype("int8")
+
+
 def _build_oof_predictions(
     normalized_time_series: pd.DataFrame,
     feature_set: str = "full",
@@ -272,7 +276,7 @@ def _build_oof_predictions(
 
         X_test = test.loc[:, evaluation_data.predictor_columns]
         probabilities = estimator.predict_proba(X_test)[:, classes.index(1)]
-        predictions = (probabilities >= 0.5).astype("int8")
+        predictions = _threshold_predictions(probabilities)
 
         output = test[["patient_id", "timestamp", TARGET_COLUMN, CURRENT_GLUCOSE_COLUMN, "glucose_observed_at_timestamp"]].copy()
         output["fold_id"] = fold.held_out_patient_id

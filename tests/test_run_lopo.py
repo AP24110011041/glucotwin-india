@@ -11,11 +11,21 @@ from src.feature_engineering import build_features
 from src.synth_data import generate_synthetic_patient_records
 from src.run_lopo import (
     _safe_brier,
+    _threshold_predictions,
     generate_synthetic_smoke_fixture,
     main,
     run_smoke_test,
     _build_oof_predictions,
 )
+
+
+def test_threshold_predictions_uses_inclusive_half_cutoff() -> None:
+    probabilities = np.array([0.49, 0.50, 0.51], dtype=float)
+
+    predictions = _threshold_predictions(probabilities)
+
+    np.testing.assert_array_equal(predictions, np.array([0, 1, 1], dtype="int8"))
+    assert predictions.dtype == np.dtype("int8")
 
 
 def test_synthetic_fixture_has_patient_wise_targets_and_synthetic_tags() -> None:

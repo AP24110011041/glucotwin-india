@@ -20,6 +20,7 @@ from src.run_lopo import generate_synthetic_smoke_fixture, run_smoke_test
 APP_TITLE = "GlucoTwin India"
 SYNTHETIC_BANNER = "SYNTHETIC RESEARCH DEMO — NOT FOR CLINICAL USE."
 DEMO_DIR = Path(__file__).resolve().parent / "synthetic_demo"
+DEFAULT_DEMO_CONFIG = {"seed": 42, "n_participants": 4, "days": 2}
 
 
 @st.cache_data(show_spinner=False)
@@ -173,36 +174,62 @@ def _render_overview(summary: dict[str, Any], fixture: pd.DataFrame) -> None:
 
 
 def _render_oof_explorer(oof: pd.DataFrame) -> None:
-    st.subheader("OOF Explorer")
-    if oof.empty:
-        st.info("No OOF rows are available for the current synthetic demo.")
-        return
+    with st.expander("Inspect synthetic predictions (optional)", expanded=False):
+        st.caption(
+            "Each row is one eligible synthetic prediction anchor. The held-out "
+            "participant was excluded from that fold's model training. Use this view "
+            "to inspect model outputs against generated outcomes by participant/fold; "
+            "these are not patient records."
+        )
+        if oof.empty:
+            st.info("No OOF rows are available for the current synthetic demo.")
+            return
 
-    patient_options = ["All"] + sorted(oof["patient_id"].astype(str).unique().tolist())
-    selected_patient = st.selectbox("Select patient", patient_options)
-    fold_options = ["All"] + sorted(oof["fold_id"].astype(str).unique().tolist())
-    selected_fold = st.selectbox("Select fold", fold_options)
+        patient_options = ["All"] + sorted(oof["patient_id"].astype(str).unique().tolist())
+        fold_options = ["All"] + sorted(oof["fold_id"].astype(str).unique().tolist())
+        patient_column, fold_column, row_count_column = st.columns(3)
+        selected_patient = patient_column.selectbox(
+            "Participant filter", patient_options
+        )
+        selected_fold = fold_column.selectbox("Held-out fold filter", fold_options)
+        row_limit = row_count_column.selectbox(
+            "Rows to inspect",
+            options=(10, 100, "All matching rows"),
+            format_func=lambda value: (
+                value if isinstance(value, str) else f"First {value} rows"
+            ),
+        )
 
-    filtered = oof.copy()
-    if selected_patient != "All":
-        filtered = filtered[filtered["patient_id"].astype(str) == selected_patient]
-    if selected_fold != "All":
-        filtered = filtered[filtered["fold_id"].astype(str) == selected_fold]
+        filtered = oof.copy()
+        if selected_patient != "All":
+            filtered = filtered[filtered["patient_id"].astype(str) == selected_patient]
+        if selected_fold != "All":
+            filtered = filtered[filtered["fold_id"].astype(str) == selected_fold]
 
-    if filtered.empty:
-        st.info("No rows match the current selection.")
-        return
+        if filtered.empty:
+            st.info("No rows match the current selection.")
+            return
 
-    display = filtered[["patient_id", "timestamp", "y_true", "y_prob", "y_pred", "fold_id"]].copy()
-    display = display.rename(columns={
-        "patient_id": "Patient",
-        "timestamp": "Timestamp",
-        "y_true": "True label",
-        "y_prob": "Probability",
-        "y_pred": "Thresholded prediction",
-        "fold_id": "Fold ID",
-    })
-    st.dataframe(display, width="stretch")
+        display = filtered[
+            ["patient_id", "timestamp", "y_true", "y_prob", "y_pred", "fold_id"]
+        ].copy()
+        display = display.rename(columns={
+            "patient_id": "Participant",
+            "timestamp": "Anchor time",
+            "y_true": "Observed event",
+            "y_prob": "Model probability",
+            "y_pred": "Prediction (0.5)",
+            "fold_id": "Held-out fold",
+        })
+        if row_limit != "All matching rows":
+            display = display.head(int(row_limit))
+        st.caption(
+            "Columns: participant ID; prediction-anchor time; observed future event "
+            "(any synthetic Libre >180 mg/dL within 120 minutes); model probability; "
+            "model prediction at the fixed 0.5 cutoff; held-out LOPO fold. "
+            f"Showing {len(display):,} of {len(filtered):,} matching synthetic anchors."
+        )
+        st.dataframe(display, width="stretch", height=460)
 
 
 def _render_model_diagnostics(oof: pd.DataFrame) -> None:
@@ -302,11 +329,36 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Synthetic demo controls")
-        seed = st.number_input("Seed", min_value=0, value=42, step=1)
-        participants = st.number_input("Participants", min_value=4, max_value=12, value=4, step=1)
-        days = st.number_input("Days", min_value=1, max_value=7, value=2, step=1)
+        active_config = st.session_state.get("demo_config", DEFAULT_DEMO_CONFIG)
+        with st.form("synthetic_run_controls"):
+            seed = st.number_input(
+                "Seed", min_value=0, value=active_config["seed"], step=1
+            )
+            participants = st.number_input(
+                "Participants",
+                min_value=4,
+                max_value=12,
+                value=active_config["n_participants"],
+                step=1,
+            )
+            days = st.number_input(
+                "Days", min_value=1, max_value=7, value=active_config["days"], step=1
+            )
+            run_evaluation = st.form_submit_button(
+                "Run synthetic evaluation", type="primary"
+            )
 
-    bundle = load_demo_bundle(seed=int(seed), n_participants=int(participants), days=int(days))
+    if run_evaluation:
+        st.session_state["demo_config"] = {
+            "seed": int(seed),
+            "n_participants": int(participants),
+            "days": int(days),
+        }
+    elif "demo_config" not in st.session_state:
+        st.session_state["demo_config"] = DEFAULT_DEMO_CONFIG.copy()
+
+    with st.spinner("Building the synthetic LOPO results..."):
+        bundle = load_demo_bundle(**st.session_state["demo_config"])
     summary = bundle["summary"]
     fixture = bundle["fixture"]
     oof = bundle["oof"]

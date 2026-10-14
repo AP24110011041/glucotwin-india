@@ -59,7 +59,7 @@ In the app, keep the synthetic disclaimer visible, show Overview and its class p
 - [ ] Review per-patient eligibility/class counts, missingness, baseline comparisons, uncertainty, and failure cases before discussing real-data performance.
 - [ ] Obtain a scientific/clinical review appropriate to the competition; no clinical validation or readiness is established here.
 - [ ] Replace this outline with the actual required deck/report only after the official competition deliverables and rubric are confirmed.
-- [ ] Decide whether a license is appropriate after reviewing project ownership and dataset restrictions; none is added by this work.
+- [ ] Review the existing `LICENSE` against project ownership and dataset restrictions; its copyright-holder placeholder and authority to license original project code remain unresolved.
 
 ## Ranked Blockers and Evidence Needed
 
@@ -67,7 +67,7 @@ In the app, keep the synthetic disclaimer visible, show Overview and its class p
 2. **Real-data scientific evidence:** No real-data pipeline run or model result was produced or reviewed in this work. Required evidence includes the exact source archive/hash, code revision, environment, participant-level eligibility, fold assignments, baseline results, OOF predictions, and metric definitions.
 3. **Signal semantics:** Source acquisition cadence versus upstream interpolation remains unresolved. Obtain source documentation and validate temporal assumptions before interpreting windows or event exposure as device-measured time.
 4. **External validation and calibration:** Synthetic reliability plots and Brier scores are software diagnostics, not real-data calibration evidence. Any real-data calibration procedure, operating point, and uncertainty plan must be pre-specified and evaluated without held-out-patient leakage.
-5. **Reproducible submission package:** `requirements.txt` is not a fully locked environment, the run-manifest helper is not wired into the smoke command, and no final deck or real-data report exists. Record versions and hashes for any permitted real-data evaluation; follow the challenge's actual submission format.
+5. **Reproducible submission package:** `requirements.txt` is not a fully locked environment, the run-manifest helper is not wired into the smoke command, and the tracked presentation PDF's readiness against the official final-submission requirements is not confirmed; no real-data report exists. Record versions and hashes for any permitted real-data evaluation; follow the challenge's actual submission format.
 
 ## Completion Estimate
 
