@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +82,76 @@ def _render_overview(summary: dict[str, Any], fixture: pd.DataFrame) -> None:
     st.write("Available OOF metrics:")
     for name, value in oof_metrics.items():
         st.write(f"- {name}: {_safe_metric_value(value)}")
+    st.caption(
+        "Pooled synthetic OOF point estimates; AUROC, AUPRC, and Brier have no "
+        "participant-bootstrap intervals in this demo."
+    )
+
+    report = summary.get("report", {})
+    anchor_comparisons = []
+    for label, group, method in (
+        (
+            "Training-fold majority",
+            report.get("baseline_summary", {}).get("overall_metrics", []),
+            "training_majority",
+        ),
+        (
+            "LightGBM at 0.5",
+            report.get("lightgbm_lopo_summary", {}).get("overall_metrics", []),
+            "lightgbm_fixed_0_5",
+        ),
+    ):
+        metric = next(
+            (
+                row
+                for row in group
+                if row.get("method") == method
+                and row.get("stratum") == "all_eligible_anchors"
+            ),
+            None,
+        )
+        if metric is not None:
+            anchor_comparisons.append(
+                {
+                    "Forecast": label,
+                    "Eligible anchors": metric["eligible_anchors"],
+                    "Precision": metric["anchor_precision"],
+                    "Recall": metric["anchor_recall"],
+                    "F1": metric["anchor_f1"],
+                }
+            )
+    if anchor_comparisons:
+        st.write("Synthetic anchor-level comparison")
+        st.dataframe(pd.DataFrame(anchor_comparisons), width="stretch")
+
+    event_comparisons = []
+    for label, group in (
+        (
+            "Training-fold majority",
+            report.get("baseline_summary", {}).get("event_overall_metrics", []),
+        ),
+        (
+            "LightGBM at 0.5",
+            report.get("lightgbm_lopo_summary", {}).get("event_overall_metrics", []),
+        ),
+    ):
+        if group:
+            metric = group[0]
+            event_comparisons.append(
+                {
+                    "Forecast": label,
+                    "Events": metric["actual_events"],
+                    "Alert episodes": metric["alert_episodes"],
+                    "Matched events": metric["matched_events"],
+                    "False alert episodes": metric["false_alert_episodes"],
+                    "False alerts per measured day": metric[
+                        "false_alert_episodes_per_day"
+                    ],
+                }
+            )
+    if event_comparisons:
+        st.write("Synthetic event-level comparison")
+        st.dataframe(pd.DataFrame(event_comparisons), width="stretch")
 
 
 def _render_oof_explorer(oof: pd.DataFrame) -> None:
@@ -113,7 +184,7 @@ def _render_oof_explorer(oof: pd.DataFrame) -> None:
         "y_pred": "Thresholded prediction",
         "fold_id": "Fold ID",
     })
-    st.dataframe(display, use_container_width=True)
+    st.dataframe(display, width="stretch")
 
 
 def _render_model_diagnostics(oof: pd.DataFrame) -> None:
@@ -135,7 +206,7 @@ def _render_model_diagnostics(oof: pd.DataFrame) -> None:
             title="Synthetic ROC curve",
             labels={"x": "False positive rate", "y": "True positive rate"},
         )
-        st.plotly_chart(roc_fig, use_container_width=True)
+        st.plotly_chart(roc_fig, width="stretch")
 
         precision, recall, _ = precision_recall_curve(y_true, y_prob)
         pr_fig = px.line(
@@ -144,13 +215,36 @@ def _render_model_diagnostics(oof: pd.DataFrame) -> None:
             title="Synthetic precision-recall curve",
             labels={"x": "Recall", "y": "Precision"},
         )
-        st.plotly_chart(pr_fig, use_container_width=True)
+        st.plotly_chart(pr_fig, width="stretch")
+
+        observed_frequency, mean_probability = calibration_curve(
+            y_true, y_prob, n_bins=10, strategy="quantile"
+        )
+        calibration_fig = px.line(
+            x=mean_probability,
+            y=observed_frequency,
+            markers=True,
+            title="Synthetic reliability diagram",
+            labels={
+                "x": "Mean predicted probability",
+                "y": "Observed event frequency",
+            },
+        )
+        calibration_fig.add_shape(
+            type="line",
+            x0=0,
+            y0=0,
+            x1=1,
+            y1=1,
+            line={"dash": "dash", "color": "gray"},
+        )
+        st.plotly_chart(calibration_fig, width="stretch")
 
     thresholded = (y_prob >= 0.5).astype(int)
     cm = confusion_matrix(y_true, thresholded, labels=[0, 1])
     cm_df = pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Pred 0", "Pred 1"])
     st.write("Confusion matrix at threshold 0.5")
-    st.dataframe(cm_df, use_container_width=True)
+    st.dataframe(cm_df, width="stretch")
 
     if y_prob.notna().any():
         dist = px.histogram(
@@ -159,7 +253,7 @@ def _render_model_diagnostics(oof: pd.DataFrame) -> None:
             nbins=20,
             title="Synthetic OOF probability distribution",
         )
-        st.plotly_chart(dist, use_container_width=True)
+        st.plotly_chart(dist, width="stretch")
 
 
 def _render_synthetic_timeline(fixture: pd.DataFrame) -> None:
@@ -179,7 +273,7 @@ def _render_synthetic_timeline(fixture: pd.DataFrame) -> None:
         title=f"Synthetic glucose history for {selected_patient}",
         labels={"libre_gl_mg_dl": "Libre glucose (mg/dL)", "timestamp": "Time"},
     )
-    st.plotly_chart(chart, use_container_width=True)
+    st.plotly_chart(chart, width="stretch")
     st.caption("This is a synthetic trend only; it is not patient data and not a clinical signal.")
 
 
@@ -191,7 +285,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Synthetic demo controls")
         seed = st.number_input("Seed", min_value=0, value=42, step=1)
-        participants = st.number_input("Participants", min_value=2, max_value=12, value=4, step=1)
+        participants = st.number_input("Participants", min_value=4, max_value=12, value=4, step=1)
         days = st.number_input("Days", min_value=1, max_value=7, value=2, step=1)
 
     bundle = load_demo_bundle(seed=int(seed), n_participants=int(participants), days=int(days))

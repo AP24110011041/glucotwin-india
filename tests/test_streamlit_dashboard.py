@@ -5,8 +5,36 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from streamlit.testing.v1 import AppTest
 
 from app.app import load_demo_bundle
+
+
+def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=60)
+
+    assert not app.exception
+    assert [element.value for element in app.subheader] == [
+        "Overview",
+        "OOF Explorer",
+        "Model Diagnostics",
+        "Synthetic Glucose Timeline",
+    ]
+    assert any(
+        "SYNTHETIC RESEARCH DEMO" in element.value
+        and "NOT FOR CLINICAL USE" in element.value
+        for element in app.markdown
+    )
+    assert len(app.get("plotly_chart")) == 5
+    assert any(
+        element.value.iloc[0]["Forecast"] == "Training-fold majority"
+        for element in app.dataframe
+    )
+    participants = next(
+        element for element in app.number_input if element.label == "Participants"
+    )
+    assert participants.min == 4
 
 
 def test_dashboard_script_imports_without_repository_on_pythonpath(tmp_path: Path) -> None:

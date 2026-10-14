@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -578,79 +579,89 @@ def process_dataset(
     normalized_path = output_dir / "cgmacros_normalized_timeseries.csv"
     features_path = output_dir / "cgmacros_features.csv"
     summary_path = output_dir / "cgmacros_target_eligibility_summary.json"
-    normalized_path.unlink(missing_ok=True)
-    features_path.unlink(missing_ok=True)
 
-    totals: dict[str, int] = {
-        "rows": 0,
-        "eligible_rows": 0,
-        "positive_rows": 0,
-        "negative_rows": 0,
-        "incomplete_horizon_rows": 0,
-        "incomplete_libre_coverage_rows": 0,
-    }
-    for participant_path, patient_id in zip(participant_paths, patient_ids, strict=True):
-        raw = pd.read_csv(participant_path)
-        normalized = normalize_participant_frame(raw, patient_id)
-        normalized = join_static_ehr(normalized, static_ehr)
-        features, patient_summary = _features_for_patient(
-            normalized,
-            horizon_minutes,
-            threshold_mg_dl,
-            max_feature_forward_fill_minutes,
-            max_label_cgm_gap_minutes,
-        )
-        normalized.to_csv(
-            normalized_path,
-            index=False,
-            mode="a",
-            header=not normalized_path.exists(),
-            date_format="%Y-%m-%d %H:%M:%S",
-        )
-        features.to_csv(
-            features_path,
-            index=False,
-            mode="a",
-            header=not features_path.exists(),
-            date_format="%Y-%m-%d %H:%M:%S",
-        )
-        for key in totals:
-            totals[key] += patient_summary[key]
+    with tempfile.TemporaryDirectory(
+        prefix=".feature-engineering-", dir=output_dir
+    ) as temporary_directory:
+        staging_dir = Path(temporary_directory)
+        normalized_staging_path = staging_dir / normalized_path.name
+        features_staging_path = staging_dir / features_path.name
+        summary_staging_path = staging_dir / summary_path.name
+        totals: dict[str, int] = {
+            "rows": 0,
+            "eligible_rows": 0,
+            "positive_rows": 0,
+            "negative_rows": 0,
+            "incomplete_horizon_rows": 0,
+            "incomplete_libre_coverage_rows": 0,
+        }
+        for participant_path, patient_id in zip(participant_paths, patient_ids, strict=True):
+            raw = pd.read_csv(participant_path)
+            normalized = normalize_participant_frame(raw, patient_id)
+            normalized = join_static_ehr(normalized, static_ehr)
+            features, patient_summary = _features_for_patient(
+                normalized,
+                horizon_minutes,
+                threshold_mg_dl,
+                max_feature_forward_fill_minutes,
+                max_label_cgm_gap_minutes,
+            )
+            normalized.to_csv(
+                normalized_staging_path,
+                index=False,
+                mode="a",
+                header=not normalized_staging_path.exists(),
+                date_format="%Y-%m-%d %H:%M:%S",
+            )
+            features.to_csv(
+                features_staging_path,
+                index=False,
+                mode="a",
+                header=not features_staging_path.exists(),
+                date_format="%Y-%m-%d %H:%M:%S",
+            )
+            for key in totals:
+                totals[key] += patient_summary[key]
 
-    eligibility_summary: dict[str, Any] = {
-        "participant_count": len(participant_paths),
-        "time_series_rows": totals["rows"],
-        "target_threshold_mg_dl": threshold_mg_dl,
-        "target_horizon_minutes": horizon_minutes,
-        "max_cgm_gap_for_label_eligibility_minutes": max_label_cgm_gap_minutes,
-        "max_feature_forward_fill_age_minutes": max_feature_forward_fill_minutes,
-        "eligible_rows": totals["eligible_rows"],
-        "positive_rows": totals["positive_rows"],
-        "negative_rows": totals["negative_rows"],
-        "ineligible_rows": totals["rows"] - totals["eligible_rows"],
-        "incomplete_horizon_rows": totals["incomplete_horizon_rows"],
-        "incomplete_libre_coverage_rows": totals["incomplete_libre_coverage_rows"],
-        "label_rule": "Any observed Libre value > threshold in (t, t+horizon].",
-        "eligibility_rule": (
-            "The participant time series must reach the horizon end and observed Libre "
-            "timestamps must cover the full window with no gap above the configured "
-            "maximum. Dexcom readings do not affect eligibility. No glucose imputation "
-            "is used for labels."
-        ),
-        "feature_sensor": "Libre GL only; Dexcom is preserved but not used for glucose features or labels.",
-        "sensor_fusion_rule": (
-            "Preserve Libre and Dexcom separately; fused glucose uses Libre when present, "
-            "otherwise Dexcom. Values are never averaged or forward-filled in the "
-            "normalized series."
-        ),
-        "meal_missingness_note": (
-            "No meal event recorded at a timestamp is marked explicitly; the source "
-            "cannot distinguish no meal from an unrecorded meal."
-        ),
-    }
-    summary_path.write_text(
-        json.dumps(eligibility_summary, indent=2, sort_keys=True), encoding="utf-8"
-    )
+        eligibility_summary: dict[str, Any] = {
+            "participant_count": len(participant_paths),
+            "time_series_rows": totals["rows"],
+            "target_threshold_mg_dl": threshold_mg_dl,
+            "target_horizon_minutes": horizon_minutes,
+            "max_cgm_gap_for_label_eligibility_minutes": max_label_cgm_gap_minutes,
+            "max_feature_forward_fill_age_minutes": max_feature_forward_fill_minutes,
+            "eligible_rows": totals["eligible_rows"],
+            "positive_rows": totals["positive_rows"],
+            "negative_rows": totals["negative_rows"],
+            "ineligible_rows": totals["rows"] - totals["eligible_rows"],
+            "incomplete_horizon_rows": totals["incomplete_horizon_rows"],
+            "incomplete_libre_coverage_rows": totals[
+                "incomplete_libre_coverage_rows"
+            ],
+            "label_rule": "Any observed Libre value > threshold in (t, t+horizon].",
+            "eligibility_rule": (
+                "The participant time series must reach the horizon end and observed Libre "
+                "timestamps must cover the full window with no gap above the configured "
+                "maximum. Dexcom readings do not affect eligibility. No glucose imputation "
+                "is used for labels."
+            ),
+            "feature_sensor": "Libre GL only; Dexcom is preserved but not used for glucose features or labels.",
+            "sensor_fusion_rule": (
+                "Preserve Libre and Dexcom separately; fused glucose uses Libre when present, "
+                "otherwise Dexcom. Values are never averaged or forward-filled in the "
+                "normalized series."
+            ),
+            "meal_missingness_note": (
+                "No meal event recorded at a timestamp is marked explicitly; the source "
+                "cannot distinguish no meal from an unrecorded meal."
+            ),
+        }
+        summary_staging_path.write_text(
+            json.dumps(eligibility_summary, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        normalized_staging_path.replace(normalized_path)
+        features_staging_path.replace(features_path)
+        summary_staging_path.replace(summary_path)
     return eligibility_summary
 
 

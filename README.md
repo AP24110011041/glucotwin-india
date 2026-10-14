@@ -2,19 +2,21 @@
 
 An early research prototype for a Type 2 diabetes digital twin, prepared for the Happiest Health Digital Twin Challenge 2026.
 
+**SYNTHETIC RESEARCH DEMO — NOT FOR CLINICAL USE**
+
 ## Problem Statement
 
-Explore whether longitudinal Libre glucose, meal, wearable, and clinical data can support prediction of whether Libre glucose will exceed 180 mg/dL during the next two hours. This repository is a starting point for data inspection and experimentation; no model or clinical performance is claimed.
+Explore whether longitudinal Libre glucose, meal, wearable, and clinical data can support prediction of whether Libre glucose will exceed 180 mg/dL during the next two hours. This repository is a research software prototype; its dashboard trains on synthetic data only, and no real-participant predictive performance is claimed.
 
 ## Intended Use
 
 Research and educational prototyping only. The project is not a medical device, does not provide diagnosis or treatment recommendations, and must not be used for clinical decisions or patient care.
 
-## Planned Dataset
+## Potential Dataset and Terms
 
-The primary planned dataset is [CGMacros on PhysioNet](https://physionet.org/content/cgmacros/1.0.0/), release 1.0.0. Review the dataset description, license, documentation, and citation requirements on the official release page before use. The release lists a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International license. Confirm that the intended challenge and research use complies with the current terms.
+The potential dataset is [CGMacros on PhysioNet](https://physionet.org/content/cgmacros/1.0.0/), release 1.0.0. Previous repository notes record a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International license and DOI [10.13026/3z8q-x658](https://doi.org/10.13026/3z8q-x658); these details were not independently re-verified during this review. Treat the rights and citation details as unconfirmed until checked against the current official release page. Confirm that the intended challenge and research use complies with the current terms before downloading, processing, or sharing any data or derived results.
 
-To obtain it, open the official release page, review and accept the applicable terms, then use the page's download option (or its documented command-line instructions) to download the files you need. Extract the files manually under `data/raw/cgmacros/`. Nothing in this repository downloads the dataset automatically, and dataset files are excluded from Git. Cite the dataset as instructed by PhysioNet; the release DOI is [10.13026/3z8q-x658](https://doi.org/10.13026/3z8q-x658).
+To obtain it, open the official release page, review and accept the applicable terms, then use the page's download option (or its documented command-line instructions) to download the files you need. Extract the files manually under `data/raw/cgmacros/`. Nothing in this repository downloads the dataset automatically, and dataset files are excluded from Git. Follow the current citation instructions on PhysioNet; treat the DOI recorded above as provisional until verified against the release page.
 
 On Windows PowerShell, after downloading the archive from that page to your Downloads folder, locate and extract it, then inspect the extracted CSV files:
 
@@ -50,22 +52,21 @@ Anchor-level precision, recall, F1, and TP/FP/TN/FN counts score each eligible s
 
 Alert episodes start at the first positive forecast anchor. Further positive anchors at or before 60 minutes after that first alert are suppressed; a later alert starts another episode. Each episode matches at most one earliest event onset strictly after the alert and no later than 120 minutes after it, and each event can match at most one alert. Future-event recall and false alert episodes/day are reported separately from anchor-level classification metrics. Measured exposure sums only intervals between adjacent rows with observed Libre values whose timestamp gap is at most one minute, clipped to the first and last eligible prediction anchors. Missing or wider-gap intervals contribute no exposure, and no duration is extrapolated outside observations. This denominator represents observed Libre monitoring time, not continuous alert-decision opportunity time: the model only emits decisions at sampled prediction anchors. If positive measured exposure cannot be calculated, false-alert episodes/day is unavailable with a reason.
 
-Uncertainty uses a deterministic participant-level bootstrap of per-patient metrics; participants, not overlapping windows, are resampled. It describes between-participant variation, not uncertainty from independent windows or a population-level clinical validation. Keep all learned preprocessing and any future feature selection inside each training fold. The CGMacros source signal's interpolation and device-acquisition cadence remain unresolved; report competition results only as exploratory results on the dataset-provided signal, not as device-cadence or clinical evidence.
+Uncertainty uses a deterministic participant-level bootstrap of per-patient anchor classification and event metrics; participants, not overlapping windows, are resampled. It describes between-participant variation, not uncertainty from independent windows or a population-level clinical validation. The current AUROC, AUPRC, and Brier summaries are pooled point estimates without participant-bootstrap intervals. Keep all learned preprocessing and any future feature selection inside each training fold. The CGMacros source signal's interpolation and device-acquisition cadence remain unresolved; report competition results only as exploratory results on the dataset-provided signal, not as device-cadence or clinical evidence.
 
 `src/evaluation_metadata.py` provides an in-memory run-manifest helper for a future report. It records a caller-supplied code revision, Python/package versions, the supplied dataset archive's SHA-256, target/anchor/LOPO settings, and event/exposure definitions. It writes no report and marks usage-rights and sensor-cadence verification as false until independently confirmed.
 
-## Architecture Overview
+## Architecture and Data Flow
 
-- `data/raw/`: manually acquired source files; never commit datasets.
-- `data/processed/`: generated or transformed local data; excluded from Git.
-- `src/inspect_data.py`: recursively reports CSV schemas, missingness, participant identifiers, likely data domains, and timestamp sampling intervals.
-- `src/synth_data.py`: creates synthetic participant EHR records and five-minute glucose, meal, and wearable time series.
-- `app/`: planned Streamlit application.
-- `notebooks/`: planned exploratory analysis.
-- `models/`: local model artifacts; excluded from Git.
-- `reports/`: planned experiment reports.
+- `data/raw/` is reserved for manually acquired local source data; dataset files are excluded from Git.
+- `src/inspect_data.py` reads local CSVs and reports schema, missingness, participant-like identifiers, domains, and timestamp intervals.
+- `src/feature_engineering.py` normalizes participant CSVs, joins static EHR fields by participant ID, creates past-only features and Libre-only future labels, and writes local processed outputs.
+- `src/evaluation.py` selects patient-relative anchors, validates an explicit predictor allow-list, makes one whole patient the test set per LOPO fold, and fits preprocessing inside each training fold.
+- `src/run_lopo.py` runs a deterministic synthetic smoke evaluation, writes synthetic OOF predictions, and prints baseline and metric summaries as JSON to stdout. It does not load CGMacros or processed real data.
+- `app/app.py` is a working Streamlit dashboard with Overview, OOF Explorer, Model Diagnostics, and Synthetic Glucose Timeline sections. Its data source is the synthetic smoke runner only.
+- `data/processed/`, `models/`, and `app/synthetic_demo/synthetic_oof_predictions.csv` are local outputs and are excluded from Git. `notebooks/` and `reports/` currently contain placeholders only.
 
-Planned analysis stack: Python, pandas, LightGBM, SHAP, Streamlit, and Plotly. The dependency list also includes NumPy, SciPy, scikit-learn, Matplotlib, joblib, requests, and pytest.
+The current implementation uses Python, NumPy, pandas, scikit-learn pipelines/metrics, LightGBM, Streamlit, and Plotly. `requirements.txt` also declares packages reserved for broader work; the current source does not directly import SHAP, SciPy, Matplotlib, or Requests. See the editable [architecture and submission notes](docs/competition_submission.md) for the data-flow diagram and evidence checklist.
 
 ## Setup
 
@@ -76,6 +77,15 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
+
+Run a small synthetic-only LOPO smoke test:
+
+```powershell
+python -m src.run_lopo --smoke-test --output-dir app/synthetic_demo
+```
+
+This trains one model per synthetic held-out participant, writes `synthetic_oof_predictions.csv` under the chosen output directory, and prints a JSON summary to stdout. It is a software-path check only, not evidence about real participants.
+
 ## Synthetic Dashboard
 
 The Streamlit app is a synthetic research demo only. It does not read CGMacros data, does not require external services or credentials, and must not be used for clinical performance claims.
@@ -102,7 +112,7 @@ python src/inspect_data.py data/raw
 Run the repository test suite with:
 
 ```powershell
-python -m pytest tests/
+python -m pytest -p no:cacheprovider tests/ -q
 ```
 
 ## Data Provenance and Privacy
@@ -113,8 +123,12 @@ Every row emitted by the synthetic generator is labeled `SYNTHETIC`. The simulat
 
 ## Validation Policy
 
-When model development begins, evaluation must use leave-one-patient-out validation only. Never split rows randomly across training and validation. Fit preprocessing and feature selection within each training fold, and build each prediction row using only information available at that timestamp. Do not report performance until the protocol has been executed on appropriately licensed real data; synthetic data is for software checks only.
+The implemented model evaluator uses leave-one-patient-out validation: one whole participant is held out per fold, and the LightGBM preprocessing pipeline is fit only on training participants. It does not perform random row splits or threshold tuning. Features are computed per patient from values timestamped at or before each prediction anchor; this assumes timestamped measurements are available at prediction time, while real sensor delivery latency has not been verified. No real-data run is evidenced in this repository review. Do not report performance until the protocol has been run on appropriately licensed real data; synthetic data is for software checks only.
+
+The runner reports pooled out-of-fold AUROC, average precision (AUPRC), positive prevalence, and Brier score. AUROC and average precision are unavailable when the evaluated labels contain only one class; Brier score remains defined for a single class. The dashboard adds a binned reliability diagram as a descriptive calibration check, not a fitted calibration model or proof of calibration. The AUPRC should be interpreted alongside the positive prevalence; a training-fold majority baseline and current-state detector are reported separately. Anchor classification uses a fixed 0.5 probability cutoff with no threshold tuning. Synthetic OOF observations are temporally overlapping and are not independent clinical evidence.
 
 ## Research Prototype Disclaimer
+
+**SYNTHETIC RESEARCH DEMO — NOT FOR CLINICAL USE**
 
 This is an early research prototype, not a clinically validated system or medical device. No safety, efficacy, generalizability, or clinical utility has been established. Predictions, synthetic examples, and future model outputs are not medical advice and must not guide care.

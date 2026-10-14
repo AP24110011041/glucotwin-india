@@ -32,7 +32,11 @@ from src.evaluation import (
     prepare_evaluation_data,
     validate_approved_predictors,
 )
-from src.feature_engineering import TARGET_THRESHOLD_MG_DL, build_features
+from src.feature_engineering import (
+    TARGET_HORIZON_MINUTES,
+    TARGET_THRESHOLD_MG_DL,
+    build_features,
+)
 from src.feature_groups import get_predictor_columns
 
 SUPPORTED_FEATURE_SETS = ("full", "cgm-only")
@@ -113,8 +117,14 @@ def generate_synthetic_smoke_fixture(
         glucose = np.clip(base + circadian + meal_effect + high_segments + noise, 60.0, 260.0)
         glucose = np.round(glucose, 1)
         target = np.full(len(timestamps), np.nan, dtype=float)
-        for index in range(len(timestamps) - 24):
-            target[index] = int(np.any(glucose[index + 1 : index + 25] > TARGET_THRESHOLD_MG_DL))
+        horizon_steps = TARGET_HORIZON_MINUTES
+        for index in range(len(timestamps) - horizon_steps):
+            target[index] = int(
+                np.any(
+                    glucose[index + 1 : index + horizon_steps + 1]
+                    > TARGET_THRESHOLD_MG_DL
+                )
+            )
 
         heart_rate = 72.0 + 5.0 * np.sin(elapsed / 18.0 + patient_index)
         activity_calories = np.linspace(0.0, 3.0, len(timestamps)) + (patient_index * 0.5)
@@ -130,36 +140,37 @@ def generate_synthetic_smoke_fixture(
         meal_amount_consumed_pct = np.zeros(len(timestamps), dtype=float)
         meal_type = [None] * len(timestamps)
 
-        for timestamp, value in zip(timestamps, glucose, strict=True):
-            index = np.where(timestamps == timestamp)[0][0]
+        for sample_index, (timestamp, value) in enumerate(
+            zip(timestamps, glucose, strict=True)
+        ):
             rows.append(
                 {
                     "patient_id": patient_id,
                     "timestamp": timestamp,
                     "libre_gl_mg_dl": float(value),
                     "dexcom_gl_mg_dl": np.nan,
-                    "heart_rate_bpm": float(heart_rate[index]),
-                    "activity_calories": float(activity_calories[index]),
-                    "activity_mets": float(activity_mets[index]),
-                    "activity_intensity": float(activity_intensity[index]),
-                    "steps": float(steps[index]),
-                    "meal_calories": float(meal_calories[index]),
-                    "meal_carbs_g": float(meal_carbs_g[index]),
-                    "meal_protein_g": float(meal_protein_g[index]),
-                    "meal_fat_g": float(meal_fat_g[index]),
-                    "meal_fiber_g": float(meal_fiber_g[index]),
-                    "meal_sugar_g": float(meal_sugar_g[index]),
-                    "meal_amount_consumed_pct": float(meal_amount_consumed_pct[index]),
-                    "meal_type": meal_type[index],
+                    "heart_rate_bpm": float(heart_rate[sample_index]),
+                    "activity_calories": float(activity_calories[sample_index]),
+                    "activity_mets": float(activity_mets[sample_index]),
+                    "activity_intensity": float(activity_intensity[sample_index]),
+                    "steps": float(steps[sample_index]),
+                    "meal_calories": float(meal_calories[sample_index]),
+                    "meal_carbs_g": float(meal_carbs_g[sample_index]),
+                    "meal_protein_g": float(meal_protein_g[sample_index]),
+                    "meal_fat_g": float(meal_fat_g[sample_index]),
+                    "meal_fiber_g": float(meal_fiber_g[sample_index]),
+                    "meal_sugar_g": float(meal_sugar_g[sample_index]),
+                    "meal_amount_consumed_pct": float(meal_amount_consumed_pct[sample_index]),
+                    "meal_type": meal_type[sample_index],
                     "meal_image_path": None,
-                    "record_index": int(index),
+                    "record_index": int(sample_index),
                     "glucose_mg_dl": float(value),
                     "glucose_source": "libre" if pd.notna(value) else "missing",
                     "glucose_observed": int(pd.notna(value)),
                     "libre_missing": int(pd.isna(value)),
                     "dexcom_missing": 1,
                     "synthetic_label": SYNTHETIC_LABEL,
-                    "target": float(target[index]),
+                    "target": float(target[sample_index]),
                 }
             )
 
@@ -287,7 +298,7 @@ def _safe_auprc(y_true: pd.Series, y_prob: pd.Series) -> float | None:
 def _safe_brier(y_true: pd.Series, y_prob: pd.Series) -> float | None:
     values = y_true.to_numpy(dtype="int8")
     scores = y_prob.to_numpy(dtype=float)
-    if len(values) == 0 or np.unique(values).size < 2:
+    if len(values) == 0:
         return None
     try:
         return float(brier_score_loss(values, scores))
@@ -385,6 +396,11 @@ def run_smoke_test(
             "baseline_summary": {
                 "fold_count": len(baseline_report["baseline_fold_choices"]),
                 "majority_baseline_role": baseline_report["majority_baseline_role"],
+                "overall_metrics": baseline_report.get("overall_metrics"),
+                "event_overall_metrics": baseline_report.get("event_overall_metrics"),
+                "participant_uncertainty": baseline_report.get(
+                    "participant_uncertainty"
+                ),
                 "current_state_detector": baseline_report["current_state_detector"],
             },
             "lightgbm_lopo_summary": {
@@ -392,6 +408,9 @@ def run_smoke_test(
                 "threshold_tuning": lightgbm_report.get("threshold_tuning"),
                 "overall_metrics": lightgbm_report.get("overall_metrics"),
                 "event_overall_metrics": lightgbm_report.get("event_overall_metrics"),
+                "participant_uncertainty": lightgbm_report.get(
+                    "participant_uncertainty"
+                ),
             },
         },
     }
@@ -415,13 +434,16 @@ def main() -> int:
     arguments = parser.parse_args()
 
     if arguments.smoke_test:
-        result = run_smoke_test(
-            output_dir=arguments.output_dir,
-            seed=arguments.seed,
-            feature_set=arguments.feature_set,
-            n_participants=arguments.n_participants,
-            days=arguments.days,
-        )
+        try:
+            result = run_smoke_test(
+                output_dir=arguments.output_dir,
+                seed=arguments.seed,
+                feature_set=arguments.feature_set,
+                n_participants=arguments.n_participants,
+                days=arguments.days,
+            )
+        except ValueError as error:
+            parser.error(str(error))
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 

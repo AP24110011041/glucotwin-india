@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.feature_engineering import build_features
 from src.run_lopo import (
+    _safe_brier,
     generate_synthetic_smoke_fixture,
+    main,
     run_smoke_test,
     _build_oof_predictions,
 )
@@ -22,6 +26,23 @@ def test_synthetic_fixture_has_patient_wise_targets_and_synthetic_tags() -> None
     assert fixture.groupby("patient_id")["target"].nunique().min() >= 2
 
 
+def test_synthetic_fixture_targets_match_production_120_minute_labels() -> None:
+    fixture = generate_synthetic_smoke_fixture(seed=23, n_participants=4, days=2)
+    expected = build_features(fixture)["glucose_over_180_next_2h"]
+    eligible = fixture["target"].notna() & expected.notna()
+
+    assert fixture["target"].notna().equals(expected.notna())
+    np.testing.assert_array_equal(
+        fixture.loc[eligible, "target"].astype("int8").to_numpy(),
+        expected.loc[eligible].astype("int8").to_numpy(),
+    )
+    for _, patient_rows in fixture.groupby("patient_id", sort=False):
+        np.testing.assert_array_equal(
+            patient_rows["record_index"].to_numpy(),
+            np.arange(len(patient_rows)),
+        )
+
+
 def test_oof_predictions_are_unique_and_cover_eligible_anchors() -> None:
     fixture = generate_synthetic_smoke_fixture(seed=17, n_participants=4, days=2)
     oof, _, _ = _build_oof_predictions(fixture, feature_set="full", seed=17)
@@ -29,7 +50,40 @@ def test_oof_predictions_are_unique_and_cover_eligible_anchors() -> None:
     assert not oof.empty
     assert oof["oof_key"].is_unique
     assert oof["patient_id"].astype(str).nunique() == 4
+    fold_by_patient = oof.groupby("patient_id")["fold_id"].first().astype(str)
+    assert fold_by_patient.to_dict() == {
+        patient_id: patient_id for patient_id in fold_by_patient.index.astype(str)
+    }
     assert set(oof.columns).issuperset({"patient_id", "timestamp", "y_true", "y_prob", "y_pred", "fold_id"})
+
+
+def test_brier_score_is_defined_for_single_class_labels() -> None:
+    assert _safe_brier(pd.Series([0, 0]), pd.Series([0.1, 0.2])) == pytest.approx(0.025)
+
+
+def test_smoke_cli_reports_invalid_participant_count_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_lopo",
+            "--smoke-test",
+            "--n-participants",
+            "2",
+            "--output-dir",
+            str(tmp_path / "output"),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        main()
+
+    assert error.value.code == 2
+    assert "n_participants must be at least 4" in capsys.readouterr().err
 
 
 def test_synthetic_fixture_has_usable_1_minute_lag_feature() -> None:
@@ -70,6 +124,10 @@ def test_cli_smoke_mode_writes_csv_and_summary(tmp_path: Path) -> None:
     assert summary["lightgbm_parameters"]["n_estimators"] == 75
     assert summary["eligible_anchor_count"] > 0
     assert summary["report"]["oof_metrics"]["auroc"] is not None
+    assert summary["report"]["baseline_summary"]["overall_metrics"]
+    assert summary["report"]["baseline_summary"]["event_overall_metrics"]
+    assert summary["report"]["baseline_summary"]["participant_uncertainty"]
+    assert summary["report"]["lightgbm_lopo_summary"]["participant_uncertainty"]
     assert summary["report"]["current_libre_threshold_reference"]["alert_count"] >= 0
 
     saved = pd.read_csv(predictions_path)

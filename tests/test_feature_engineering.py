@@ -382,3 +382,40 @@ def test_repeated_processing_is_deterministic_and_schema_stable(tmp_path: Path) 
     assert int(feature_output["glucose_over_180_next_2h"].isna().sum()) == first_summary[
         "ineligible_rows"
     ]
+
+
+def test_processing_failure_preserves_previous_outputs(tmp_path: Path) -> None:
+    data_dir = tmp_path / "raw"
+    for patient_id in ("001", "002"):
+        (data_dir / f"CGMacros-{patient_id}").mkdir(parents=True)
+    _raw_participant([120.0] * 126).to_csv(
+        data_dir / "CGMacros-001" / "CGMacros-001.csv", index=False
+    )
+    invalid_participant = _raw_participant([120.0] * 126)
+    invalid_participant["Libre GL"] = invalid_participant["Libre GL"].astype(object)
+    invalid_participant.loc[0, "Libre GL"] = "invalid"
+    invalid_participant.to_csv(
+        data_dir / "CGMacros-002" / "CGMacros-002.csv", index=False
+    )
+    pd.DataFrame(
+        {"subject": [1, 2], "Age": [40, 50], "Gender": ["F", "M"], "BMI": [24.0, 29.0]}
+    ).to_csv(data_dir / "bio.csv", index=False)
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    outputs = {
+        "cgmacros_normalized_timeseries.csv": b"existing normalized output",
+        "cgmacros_features.csv": b"existing feature output",
+        "cgmacros_target_eligibility_summary.json": b"existing summary",
+    }
+    for filename, content in outputs.items():
+        (output_dir / filename).write_bytes(content)
+
+    with pytest.raises(ValueError, match="Non-numeric values"):
+        process_dataset(data_dir, output_dir)
+
+    assert {
+        filename: (output_dir / filename).read_bytes()
+        for filename in outputs
+    } == outputs
+    assert not list(output_dir.glob(".feature-engineering-*"))
