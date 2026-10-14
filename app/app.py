@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,10 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from sklearn.metrics import confusion_matrix, precision_recall_curve, roc_curve
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.run_lopo import generate_synthetic_smoke_fixture, run_smoke_test
 

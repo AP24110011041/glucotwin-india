@@ -1,8 +1,38 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pandas as pd
 
 from app.app import load_demo_bundle
+
+
+def test_dashboard_script_imports_without_repository_on_pythonpath(tmp_path: Path) -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    import_script = f"""
+import importlib.util
+import sys
+from pathlib import Path
+
+app_path = Path({str(app_path)!r})
+repository_root = app_path.parent.parent
+sys.path = [
+    entry for entry in sys.path
+    if Path(entry or ".").resolve() != repository_root
+]
+spec = importlib.util.spec_from_file_location("dashboard_app", app_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+"""
+    subprocess.run(
+        [sys.executable, "-c", import_script],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_synthetic_demo_bundle_has_expected_contract() -> None:
