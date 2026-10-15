@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
 from src.run_lopo import generate_synthetic_smoke_fixture, run_smoke_test
 
 APP_TITLE = "GlucoTwin India"
-SYNTHETIC_BANNER = "SYNTHETIC RESEARCH DEMO — NOT FOR CLINICAL USE."
+SYNTHETIC_BANNER = "Synthetic research prototype — not clinically validated and not for medical decision-making."
 DEMO_DIR = Path(__file__).resolve().parent / "synthetic_demo"
 DEFAULT_DEMO_CONFIG = {"seed": 42, "n_participants": 4, "days": 2}
 
@@ -56,55 +56,59 @@ def _safe_metric_value(value: Any) -> Any:
     return value
 
 
-def _render_overview(summary: dict[str, Any], fixture: pd.DataFrame) -> None:
-    st.subheader("Overview")
-    st.markdown(f"**{SYNTHETIC_BANNER}**")
+def _render_overview(summary: dict[str, Any]) -> None:
+    st.subheader("Data & Model Overview")
 
     metrics = summary.get("report", {}).get("oof_metrics", {})
     metadata = summary.get("lightgbm_parameters", {})
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Seed", summary.get("seed", "n/a"))
-    col2.metric("Participants", fixture["patient_id"].nunique())
-    col3.metric("Eligible anchors", summary.get("eligible_anchor_count", 0))
-    col4.metric("Prevalence", _safe_metric_value(metrics.get("positive_prevalence")))
-
-    st.write("Synthetic data status")
-    st.write(f"- synthetic_label: {summary.get('synthetic_label', 'SYNTHETIC')}")
-    st.write(f"- feature_set: {summary.get('feature_set', 'full')}")
-    st.write(f"- patient folds: {summary.get('fold_count', 0)}")
-    st.write(f"- LightGBM parameters: {metadata}")
-
     input_streams = summary.get("model_input_streams", {})
-    if input_streams:
-        st.markdown("**Combined synthetic model inputs**")
-        st.write(f"- Joined by: {input_streams['join_key']}")
-        st.write(
-            "- Static predictors: "
-            + ", ".join(input_streams["static_predictor_columns"])
-        )
-        st.write(
-            "- Dynamic predictors: "
-            f"{input_streams['dynamic_predictor_count']} features, including "
-            + ", ".join(input_streams["dynamic_predictor_examples"])
-        )
-        st.caption(
-            "Both streams are generated synthetic inputs. No real patient records "
-            "or real-time hardware are connected."
-        )
-
-    oof_metrics = {
-        "AUROC": metrics.get("auroc"),
-        "AUPRC": metrics.get("auprc"),
-        "Brier score": metrics.get("brier_score"),
-    }
-    st.write("Available OOF metrics:")
-    for name, value in oof_metrics.items():
-        st.write(f"- {name}: {_safe_metric_value(value)}")
-    st.caption(
-        "Pooled synthetic OOF point estimates; AUROC, AUPRC, and Brier have no "
-        "participant-bootstrap intervals in this demo."
+    fold_count = summary.get("fold_count", "Not available")
+    dynamic_predictor_count = input_streams.get(
+        "dynamic_predictor_count", "Not available"
     )
+
+    data_column, folds_column, features_column = st.columns(3)
+    data_column.metric("Data Source", "Synthetic")
+    folds_column.metric("Evaluation Folds", fold_count)
+    features_column.metric("Dynamic Features", dynamic_predictor_count)
+
+    st.markdown("**Data Used by the Model**")
+    profile_column, glucose_column, lifestyle_column = st.columns(3)
+    profile_column.markdown("**Participant Profile**")
+    profile_column.write("Age, gender, diagnosis, diabetes duration, BMI and HbA1c")
+    glucose_column.markdown("**Glucose History**")
+    glucose_column.write("Current and previous glucose readings")
+    lifestyle_column.markdown("**Lifestyle Signals**")
+    lifestyle_column.write("Meals, heart rate, physical activity and steps")
+
+    st.caption(
+        "All inputs are synthetically generated. No real patient records or live "
+        "glucose-monitoring hardware are connected. Synthetic evaluation results "
+        "do not establish clinical accuracy."
+    )
+
+    with st.expander("Advanced Technical Details", expanded=False):
+        st.write(f"Feature set: {summary.get('feature_set', 'Not available')}")
+        st.write(f"Evaluation fold count: {fold_count}")
+        st.write(f"Dynamic predictor count: {dynamic_predictor_count}")
+        if input_streams:
+            st.write("Model input metadata:")
+            st.json(input_streams)
+        st.write("LightGBM parameters:")
+        st.json(metadata)
+
+        oof_metrics = {
+            "AUROC": metrics.get("auroc"),
+            "AUPRC": metrics.get("auprc"),
+            "Brier score": metrics.get("brier_score"),
+        }
+        st.write("Synthetic out-of-fold metrics:")
+        for name, value in oof_metrics.items():
+            st.write(f"- {name}: {_safe_metric_value(value)}")
+        st.caption(
+            "Pooled synthetic OOF point estimates; AUROC, AUPRC, and Brier have no "
+            "participant-bootstrap intervals in this demo."
+        )
 
     report = summary.get("report", {})
     anchor_comparisons = []
@@ -363,7 +367,7 @@ def main() -> None:
     fixture = bundle["fixture"]
     oof = bundle["oof"]
 
-    _render_overview(summary, fixture)
+    _render_overview(summary)
     _render_oof_explorer(oof)
     _render_model_diagnostics(oof)
     _render_synthetic_timeline(fixture)

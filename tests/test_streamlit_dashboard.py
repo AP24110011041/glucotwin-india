@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 
 from app.app import load_demo_bundle
 from src.run_lopo import generate_synthetic_smoke_fixture
+
 
 
 def _prediction_expander(app: AppTest):
@@ -49,28 +51,47 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
 
     assert not app.exception
     assert [element.value for element in app.subheader] == [
-        "Overview",
+        "Data & Model Overview",
         "Model Diagnostics",
         "Synthetic Glucose Timeline",
     ]
     prediction_expander = _prediction_expander(app)
     assert prediction_expander.proto.HasField("expanded")
     assert prediction_expander.proto.expanded is False
+    advanced_expander = next(
+        element for element in app.expander if element.label == "Advanced Technical Details"
+    )
+    assert advanced_expander.proto.expanded is False
     assert any(
         "inspect model outputs against generated outcomes" in element.value
         for element in prediction_expander.caption
     )
     assert any(
-        "SYNTHETIC RESEARCH DEMO" in element.value
-        and "NOT FOR CLINICAL USE" in element.value
+        "Synthetic research prototype" in element.value
+        and "not for medical decision-making" in element.value
         for element in app.markdown
     )
-    assert any(
-        "Combined synthetic model inputs" in element.value
-        for element in app.markdown
+
+    main_markdown = "\n".join(element.value for element in app.markdown)
+    assert "Synthetic data status" not in main_markdown
+    assert "Combined synthetic model inputs" not in main_markdown
+    assert "Static predictors:" not in main_markdown
+    assert "Dynamic predictors:" not in main_markdown
+    assert "age_years_missing" not in main_markdown
+    assert "glucose_lag_1m_mg_dl" not in main_markdown
+    assert "learning_rate" not in main_markdown
+
+    summary = {
+        "model_input_streams": next(
+            json.loads(element.value)
+            for element in advanced_expander.json
+            if "dynamic_predictor_count" in element.value
+        )
+    }
+    assert next(metric.value for metric in app.metric if metric.label == "Data Source") == "Synthetic"
+    assert next(metric.value for metric in app.metric if metric.label == "Dynamic Features") == str(
+        summary["model_input_streams"]["dynamic_predictor_count"]
     )
-    assert any("Static predictors:" in element.value for element in app.markdown)
-    assert any("Dynamic predictors:" in element.value for element in app.markdown)
     assert len(app.get("plotly_chart")) == 5
     assert any(
         element.value.iloc[0]["Forecast"] == "Training-fold majority"
@@ -80,8 +101,6 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         element for element in app.number_input if element.label == "Participants"
     )
     assert participants.min == 4
-
-
 def test_run_form_updates_evaluation_and_oof_filters_predictions() -> None:
     app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
     app = AppTest.from_file(str(app_path)).run(timeout=60)
@@ -89,7 +108,9 @@ def test_run_form_updates_evaluation_and_oof_filters_predictions() -> None:
     seed = next(element for element in app.number_input if element.label == "Seed")
     seed.set_value(43)
     app.run(timeout=60)
-    assert next(element.value for element in app.metric if element.label == "Seed") == "42"
+    assert next(
+        element.value for element in app.metric if element.label == "Evaluation Folds"
+    ) == "4"
 
     seed = next(element for element in app.number_input if element.label == "Seed")
     participants = next(
@@ -109,9 +130,11 @@ def test_run_form_updates_evaluation_and_oof_filters_predictions() -> None:
     assert not app.exception
     expected_config = {"seed": 43, "n_participants": 5, "days": 1}
     assert app.session_state["demo_config"] == expected_config
-    assert next(element.value for element in app.metric if element.label == "Seed") == "43"
     assert next(
-        element.value for element in app.metric if element.label == "Participants"
+        element.value for element in app.metric if element.label == "Data Source"
+    ) == "Synthetic"
+    assert next(
+        element.value for element in app.metric if element.label == "Evaluation Folds"
     ) == "5"
     assert next(element.value for element in app.number_input if element.label == "Days") == 1
 
