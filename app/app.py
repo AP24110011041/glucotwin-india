@@ -632,7 +632,7 @@ def _render_patient_view(fixture: pd.DataFrame, oof: pd.DataFrame) -> None:
             x=actual_outcome["timestamp"],
             y=actual_outcome["libre_gl_mg_dl"],
             mode="lines",
-            name="Actual outcome (known in this retrospective replay)",
+            name="Actual outcome (retrospective)",
             line={"color": "#B5483A", "width": 2},
             connectgaps=False,
         )
@@ -642,15 +642,15 @@ def _render_patient_view(fixture: pd.DataFrame, oof: pd.DataFrame) -> None:
         x1=outcome_end,
         fillcolor="rgba(245, 191, 175, 0.30)",
         line_width=0,
-        annotation_text="Actual outcome (known in this retrospective replay)",
-        annotation_position="top left",
+        annotation_text="Actual outcome (retrospective)",
+        annotation_position="top right",
     )
     chart.add_vline(
         x=selected_time,
         line_dash="dash",
         line_color="#173A36",
         annotation_text="Prediction time",
-        annotation_position="top",
+        annotation_position="bottom",
     )
     chart.add_hline(
         y=180,
@@ -663,6 +663,15 @@ def _render_patient_view(fixture: pd.DataFrame, oof: pd.DataFrame) -> None:
         title="Observed glucose and retrospective outcome",
         xaxis_title="Time",
         yaxis_title="Glucose (mg/dL)",
+        xaxis={"range": [observed_start, outcome_end]},
+        legend={
+            "orientation": "h",
+            "x": 0.5,
+            "xanchor": "center",
+            "y": -0.28,
+            "yanchor": "top",
+        },
+        margin={"b": 100},
     )
     st.plotly_chart(chart, width="stretch")
 

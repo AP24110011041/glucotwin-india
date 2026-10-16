@@ -267,14 +267,26 @@ def test_patient_view_selectors_chart_and_probability_match_oof() -> None:
     traces = {trace["name"]: trace for trace in patient_chart["data"]}
     assert set(traces) >= {
         "Observed",
-        "Actual outcome (known in this retrospective replay)",
+        "Actual outcome (retrospective)",
     }
     assert traces["Observed"]["line"]["color"] != traces[
-        "Actual outcome (known in this retrospective replay)"
+        "Actual outcome (retrospective)"
     ]["line"]["color"]
     annotations = patient_chart["layout"].get("annotations", [])
     assert any(item.get("text") == "180 mg/dL threshold" for item in annotations)
     assert any(item.get("text") == "Prediction time" for item in annotations)
+    assert any(
+        item.get("text") == "Actual outcome (retrospective)"
+        for item in annotations
+    )
+    x_range = patient_chart["layout"]["xaxis"]["range"]
+    range_start, range_end = map(pd.Timestamp, x_range)
+    selected_timestamp = pd.Timestamp(selected_time)
+    assert range_start == selected_timestamp - pd.Timedelta(hours=6)
+    assert range_end == selected_timestamp + pd.Timedelta(hours=2)
+    assert range_end - range_start == pd.Timedelta(hours=8)
+    assert patient_chart["layout"]["legend"]["orientation"] == "h"
+    assert patient_chart["layout"]["legend"]["y"] < 0
     quality_table = next(
         table
         for table in app.dataframe
