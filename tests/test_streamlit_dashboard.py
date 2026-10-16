@@ -10,7 +10,13 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from app.app import _calibration_bin_metadata, _table_value, load_demo_bundle
+from app.app import (
+    _anchor_precision_display,
+    _calibration_bin_metadata,
+    _render_patient_view,
+    _table_value,
+    load_demo_bundle,
+)
 from src.run_lopo import generate_synthetic_smoke_fixture
 
 
@@ -85,6 +91,7 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         "Data & Model Overview",
         "Model Diagnostics",
         "Synthetic Glucose Timeline",
+        "Synthetic patient view (conceptual)",
     ]
     prediction_expander = _prediction_expander(app)
     assert prediction_expander.proto.HasField("expanded")
@@ -105,6 +112,18 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
     assert "**Synthetic research prototype — not clinically validated and not for medical decision-making.**" in [
         element.value for element in app.markdown
     ]
+    assert any(
+        element.value == "Synthetic patient. Concept demonstration only. Not for clinical use."
+        for element in app.caption
+    )
+    assert "Hypothetical" not in "\n".join(
+        [
+            *(element.value for element in app.subheader),
+            *(element.value for element in app.markdown),
+            *(element.value for element in app.caption),
+            *(element.label for element in app.selectbox),
+        ]
+    )
 
     main_markdown = "\n".join(element.value for element in app.markdown)
     assert "Synthetic data status" not in main_markdown
@@ -126,7 +145,7 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
     assert next(metric.value for metric in app.metric if metric.label == "Dynamic Features") == str(
         summary["model_input_streams"]["dynamic_predictor_count"]
     )
-    assert len(app.get("plotly_chart")) == 5
+    assert len(app.get("plotly_chart")) == 6
     comparison_tables = [
         element for element in app.dataframe if "Forecast" in element.value.columns
     ]
@@ -185,10 +204,228 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         element.label == "Show model risk (out-of-fold)" and element.value is False
         for element in app.checkbox
     )
+    assert any(
+        "Retrospective replay of out-of-fold predictions on synthetic data. Not a live prediction."
+        in element.value
+        for element in app.caption
+    )
     participants = next(
         element for element in app.number_input if element.label == "Participants"
     )
     assert participants.min == 4
+
+
+def test_patient_view_selectors_chart_and_probability_match_oof() -> None:
+    bundle = load_demo_bundle(seed=42, n_participants=4, days=2)
+    oof = bundle["oof"].copy()
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=60)
+    participant_selector = next(
+        element for element in app.selectbox if element.label == "Synthetic participant"
+    )
+    default_patient = participant_selector.value
+    time_selector = next(
+        element
+        for element in app.selectbox
+        if element.label == "Predicted time (out-of-fold anchor)"
+    )
+    default_time = pd.Timestamp(time_selector.value)
+    patient_glucose = bundle["fixture"].loc[
+        bundle["fixture"]["patient_id"].astype(str).eq(default_patient)
+        & pd.to_numeric(bundle["fixture"]["libre_gl_mg_dl"], errors="coerce").notna(),
+        "timestamp",
+    ]
+    assert (default_time - pd.Timestamp(patient_glucose.min())).total_seconds() >= 360 * 60
+
+    selected_patient = sorted(oof["patient_id"].astype(str).unique())[-1]
+    selected_row = (
+        oof.loc[oof["patient_id"].astype(str).eq(selected_patient)]
+        .sort_values("timestamp")
+        .iloc[-1]
+    )
+    selected_time = pd.Timestamp(selected_row["timestamp"]).strftime("%Y-%m-%d %H:%M")
+    participant_selector.set_value(selected_patient).run(timeout=60)
+    time_selector = next(
+        element
+        for element in app.selectbox
+        if element.label == "Predicted time (out-of-fold anchor)"
+    )
+    assert selected_time in time_selector.options
+    time_selector.set_value(selected_time).run(timeout=60)
+
+    assert not app.exception
+    assert next(
+        metric.value for metric in app.metric if metric.label == "Out-of-fold probability"
+    ) == f"{float(selected_row['y_prob']):.1%}"
+    alert_metric = next(
+        metric
+        for metric in app.metric
+        if metric.label == "Alert at the fixed 50% cutoff"
+    )
+    assert alert_metric.value in {"yes", "no"}
+    patient_chart = json.loads(app.get("plotly_chart")[-1].proto.spec)
+    traces = {trace["name"]: trace for trace in patient_chart["data"]}
+    assert set(traces) >= {
+        "Observed",
+        "Actual outcome (known in this retrospective replay)",
+    }
+    assert traces["Observed"]["line"]["color"] != traces[
+        "Actual outcome (known in this retrospective replay)"
+    ]["line"]["color"]
+    annotations = patient_chart["layout"].get("annotations", [])
+    assert any(item.get("text") == "180 mg/dL threshold" for item in annotations)
+    assert any(item.get("text") == "Prediction time" for item in annotations)
+    quality_table = next(
+        table
+        for table in app.dataframe
+        if "Observed data-quality measure" in table.value.columns
+    ).value
+    latest_age = quality_table.loc[
+        quality_table["Observed data-quality measure"].eq(
+            "Age of latest glucose reading"
+        ),
+        "Value",
+    ].iloc[0]
+    assert latest_age == "1 minute"
+
+    context_table = next(
+        table for table in app.dataframe if "Observed signal" in table.value.columns
+    ).value
+    assert "Glucose data quality" not in context_table["Observed signal"].tolist()
+    activity_summary = context_table.loc[
+        context_table["Observed signal"].eq("Activity"), "Observed value"
+    ].iloc[0]
+    steps_display = next(
+        value
+        for value in activity_summary.split("; ")
+        if value.endswith(" steps (observed total)")
+    )
+    steps_count = steps_display.removesuffix(" steps (observed total)").replace(",", "")
+    assert steps_count.isdigit()
+    assert any(
+        element.value
+        == "Synthetic signals are generated independently and are not physiologically coupled (for example, steps and METs do not constrain each other)."
+        for element in app.caption
+    )
+
+
+def test_patient_view_first_anchor_reports_no_glucose_history() -> None:
+    bundle = load_demo_bundle(seed=42, n_participants=4, days=2)
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=60)
+    participant_selector = next(
+        element for element in app.selectbox if element.label == "Synthetic participant"
+    )
+    selected_patient = participant_selector.value
+    first_anchor = (
+        bundle["oof"].loc[
+            bundle["oof"]["patient_id"].astype(str).eq(selected_patient)
+        ]
+        .sort_values("timestamp")
+        .iloc[0]
+    )
+    time_selector = next(
+        element
+        for element in app.selectbox
+        if element.label == "Predicted time (out-of-fold anchor)"
+    )
+    time_selector.set_value(
+        pd.Timestamp(first_anchor["timestamp"]).strftime("%Y-%m-%d %H:%M")
+    ).run(timeout=60)
+
+    assert not app.exception
+    quality_table = next(
+        table
+        for table in app.dataframe
+        if "Observed data-quality measure" in table.value.columns
+    ).value
+    quality_values = quality_table["Value"].astype(str).tolist()
+    assert "No glucose history before this time" in quality_values
+    assert "n/a" in quality_values
+    assert not any("0.0%" in value for value in quality_values)
+    context_table = next(
+        table for table in app.dataframe if "Observed signal" in table.value.columns
+    ).value
+    assert "Glucose data quality" not in context_table["Observed signal"].tolist()
+
+
+def test_patient_view_missing_glucose_quality_for_participant_with_gaps() -> None:
+    def render_patient_view_with_gap() -> None:
+        import numpy as np
+        import pandas as pd
+
+        from app.app import _render_patient_view, load_demo_bundle
+
+        bundle = load_demo_bundle(seed=42, n_participants=4, days=2)
+        fixture = bundle["fixture"].copy()
+        oof = bundle["oof"].copy()
+        selected_patient = sorted(oof["patient_id"].astype(str).unique())[0]
+        patient_oof = oof.loc[
+            oof["patient_id"].astype(str).eq(selected_patient)
+        ].copy()
+        patient_oof["timestamp"] = pd.to_datetime(patient_oof["timestamp"])
+        patient_oof = patient_oof.sort_values("timestamp")
+        patient_fixture = fixture.loc[
+            fixture["patient_id"].astype(str).eq(selected_patient)
+        ].copy()
+        patient_fixture["timestamp"] = pd.to_datetime(patient_fixture["timestamp"])
+        first_reading = patient_fixture.loc[
+            pd.to_numeric(patient_fixture["libre_gl_mg_dl"], errors="coerce").notna(),
+            "timestamp",
+        ].min()
+        selected_time = next(
+            timestamp
+            for timestamp in patient_oof["timestamp"]
+            if (timestamp - first_reading).total_seconds() >= 360 * 60
+        )
+        gap_start = selected_time - pd.Timedelta(minutes=20)
+        gap_end = selected_time - pd.Timedelta(minutes=11)
+        fixture_timestamps = pd.to_datetime(fixture["timestamp"])
+        gap = (
+            fixture["patient_id"].astype(str).eq(selected_patient)
+            & fixture_timestamps.between(gap_start, gap_end, inclusive="both")
+        )
+        gap_count = int(gap.sum())
+        assert gap_count == 10
+        fixture.loc[gap, "libre_gl_mg_dl"] = np.nan
+        _render_patient_view(fixture, oof)
+
+    app = AppTest.from_function(render_patient_view_with_gap).run(timeout=60)
+    assert not app.exception
+    quality_table = next(
+        table
+        for table in app.dataframe
+        if "Observed data-quality measure" in table.value.columns
+    ).value
+    missing_display = quality_table.loc[
+        quality_table["Observed data-quality measure"].eq("Missing glucose readings"),
+        "Value",
+    ].iloc[0]
+    missing_share_text, count_text = missing_display.split("%", maxsplit=1)
+    count_text = count_text.strip().strip("()")
+    observed_expected = count_text.split(" ", maxsplit=1)[0]
+    observed_count, expected_count = map(int, observed_expected.split("/"))
+    assert float(missing_share_text) > 0
+    assert observed_count + 10 == expected_count == 360
+
+    context_table = next(
+        table for table in app.dataframe if "Observed signal" in table.value.columns
+    ).value
+    assert "Glucose data quality" not in context_table["Observed signal"].tolist()
+    assert not any(
+        "0.0%" in str(value) for value in context_table["Observed value"].tolist()
+    )
+
+
+def test_no_alert_precision_uses_existing_report_counts() -> None:
+    assert _anchor_precision_display(
+        {"true_positives": 0, "false_positives": 0, "anchor_precision": 0.0}
+    ) == "n/a (no alerts)"
+    assert _anchor_precision_display(
+        {"true_positives": 1, "false_positives": 0, "anchor_precision": 1.0}
+    ) == 1.0
+
+
 def test_undefined_table_metrics_show_a_reason() -> None:
     assert _table_value(None, "no monitored hours") == "n/a (no monitored hours)"
     assert _table_value(np.nan, "no positive events") == "n/a (no positive events)"
@@ -199,8 +436,6 @@ def test_reliability_bins_below_twenty_anchors_are_marked_low_sample() -> None:
 
     assert (bin_counts < 20).all()
     assert set(sample_labels) == {"Low sample (<20 anchors)"}
-
-
 def test_timeline_optional_oof_risk_uses_secondary_probability_axis() -> None:
     app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
     app = AppTest.from_file(str(app_path)).run(timeout=60)

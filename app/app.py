@@ -63,6 +63,18 @@ def _table_value(value: Any, reason: str) -> Any:
     return value
 
 
+def _anchor_precision_display(metric: dict[str, Any]) -> Any:
+    true_positives = metric.get("true_positives")
+    false_positives = metric.get("false_positives")
+    if (
+        true_positives is not None
+        and false_positives is not None
+        and true_positives + false_positives == 0
+    ):
+        return "n/a (no alerts)"
+    return _table_value(metric.get("anchor_precision"), "no predicted positives")
+
+
 def _calibration_bin_metadata(y_prob: pd.Series) -> tuple[np.ndarray, np.ndarray]:
     quantile_edges = np.percentile(y_prob, np.linspace(0, 100, 11))
     bin_ids = np.searchsorted(quantile_edges[1:-1], y_prob, side="left")
@@ -154,9 +166,7 @@ def _render_overview(summary: dict[str, Any]) -> None:
                 {
                     "Forecast": label,
                     "Eligible anchors": metric["eligible_anchors"],
-                    "Precision": _table_value(
-                        metric.get("anchor_precision"), "no predicted positives"
-                    ),
+                    "Precision": _anchor_precision_display(metric),
                     "Recall": _table_value(
                         metric.get("anchor_recall"), "no positive events"
                     ),
@@ -348,6 +358,7 @@ def _render_model_diagnostics(
                 line_dash="dash",
                 line_color="gray",
                 annotation_text="Prevalence",
+                annotation_position="top left",
             )
         st.plotly_chart(pr_fig, width="stretch")
 
@@ -430,7 +441,7 @@ def _render_synthetic_timeline(fixture: pd.DataFrame, oof: pd.DataFrame) -> None
         y=180,
         line_dash="dash",
         annotation_text="180 mg/dL threshold",
-        annotation_position="top left",
+        annotation_position="top right",
     )
     if show_model_risk:
         risk_frame = oof.loc[
@@ -455,6 +466,283 @@ def _render_synthetic_timeline(fixture: pd.DataFrame, oof: pd.DataFrame) -> None
         )
     st.plotly_chart(chart, width="stretch")
     st.caption("This is a synthetic trend only; it is not patient data and not a clinical signal.")
+
+
+def _median_sampling_interval_minutes(patient_fixture: pd.DataFrame) -> float | None:
+    timestamps = (
+        pd.to_datetime(patient_fixture["timestamp"])
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+    )
+    intervals = timestamps.diff().dt.total_seconds().div(60)
+    intervals = intervals.loc[intervals > 0]
+    return float(intervals.median()) if not intervals.empty else None
+
+
+def _format_minutes(minutes: float) -> str:
+    unit = "minute" if minutes == 1 else "minutes"
+    return f"{minutes:g} {unit}"
+
+
+def _glucose_window_quality(
+    patient_fixture: pd.DataFrame,
+    selected_time: pd.Timestamp,
+    window_hours: int,
+    sampling_interval_minutes: float | None,
+) -> dict[str, Any]:
+    window_start = selected_time - pd.Timedelta(hours=window_hours)
+    window = patient_fixture.loc[
+        patient_fixture["timestamp"].ge(window_start)
+        & patient_fixture["timestamp"].lt(selected_time)
+    ].sort_values("timestamp")
+    glucose = pd.to_numeric(window["libre_gl_mg_dl"], errors="coerce")
+    observed_count = int(glucose.notna().sum())
+    expected_count = (
+        int(round(window_hours * 60 / sampling_interval_minutes))
+        if sampling_interval_minutes is not None and sampling_interval_minutes > 0
+        else None
+    )
+    if observed_count == 0:
+        missing_share = None
+        missing_display = "No glucose history before this time"
+        latest_reading_age = "n/a"
+    else:
+        missing_share = (
+            1 - observed_count / expected_count
+            if expected_count is not None and expected_count > 0
+            else None
+        )
+        missing_display = (
+            f"{missing_share:.1%} ({observed_count}/{expected_count} observed/expected)"
+            if missing_share is not None
+            else "n/a (sampling interval unavailable)"
+        )
+        latest_timestamp = window.loc[glucose.notna(), "timestamp"].max()
+        latest_age_minutes = (selected_time - latest_timestamp).total_seconds() / 60
+        latest_reading_age = _format_minutes(latest_age_minutes)
+    return {
+        "expected_count": expected_count,
+        "observed_count": observed_count,
+        "missing_share": missing_share,
+        "missing_display": missing_display,
+        "latest_reading_age": latest_reading_age,
+    }
+
+
+def _render_patient_view(fixture: pd.DataFrame, oof: pd.DataFrame) -> None:
+    st.subheader("Synthetic patient view (conceptual)")
+    st.caption("Synthetic patient. Concept demonstration only. Not for clinical use.")
+
+    patient_ids = sorted(
+        set(fixture["patient_id"].astype(str))
+        & set(oof["patient_id"].astype(str))
+    )
+    if not patient_ids:
+        st.info("No synthetic participants with eligible out-of-fold anchors are available.")
+        return
+
+    selected_patient = st.selectbox(
+        "Synthetic participant", patient_ids, key="patient_view_participant"
+    )
+    patient_fixture = fixture.loc[
+        fixture["patient_id"].astype(str).eq(selected_patient)
+    ].copy()
+    patient_fixture["timestamp"] = pd.to_datetime(patient_fixture["timestamp"])
+    patient_oof = oof.loc[
+        oof["patient_id"].astype(str).eq(selected_patient)
+    ].copy()
+    patient_oof["timestamp"] = pd.to_datetime(patient_oof["timestamp"])
+    patient_oof = patient_oof.sort_values("timestamp")
+    if patient_oof.empty:
+        st.info("No eligible out-of-fold anchors are available for this participant.")
+        return
+
+    st.markdown("#### Observed synthetic profile")
+    profile = patient_fixture.iloc[0]
+    profile_table = pd.DataFrame(
+        [
+            {"Synthetic profile field": "Age (synthetic)", "Value": f"{profile['age_years']} years"},
+            {"Synthetic profile field": "Gender (synthetic)", "Value": str(profile["gender"])},
+            {"Synthetic profile field": "Diagnosis (synthetic)", "Value": str(profile["diagnosis"])},
+            {
+                "Synthetic profile field": "Diabetes duration (synthetic)",
+                "Value": f"{profile['diabetes_duration_years']} years",
+            },
+            {"Synthetic profile field": "BMI (synthetic)", "Value": f"{profile['bmi']:.1f} kg/m²"},
+            {"Synthetic profile field": "HbA1c (synthetic)", "Value": f"{profile['a1c_pdl_lab']:.1f}%"},
+        ]
+    )
+    st.dataframe(profile_table, width="stretch", hide_index=True)
+
+    first_glucose_time = patient_fixture.loc[
+        pd.to_numeric(patient_fixture["libre_gl_mg_dl"], errors="coerce").notna(),
+        "timestamp",
+    ].min()
+    available_history = (
+        patient_oof["timestamp"] - first_glucose_time
+    ).dt.total_seconds().div(60)
+    default_anchor_index = next(
+        (index for index, minutes in enumerate(available_history) if minutes >= 360),
+        0,
+    )
+    time_options = patient_oof["timestamp"].dt.strftime("%Y-%m-%d %H:%M").tolist()
+    selected_time_label = st.selectbox(
+        "Predicted time (out-of-fold anchor)",
+        time_options,
+        index=default_anchor_index,
+        key="patient_view_time",
+    )
+    selected_time = pd.Timestamp(selected_time_label)
+    history_minutes = max(
+        0.0, (selected_time - first_glucose_time).total_seconds() / 60
+    )
+    if history_minutes < 360:
+        st.info(f"Only {_format_minutes(history_minutes)} of history before this time")
+    prediction = patient_oof.loc[
+        patient_oof["timestamp"].eq(selected_time)
+    ].iloc[0]
+
+    st.markdown("#### Observed glucose and retrospective outcome")
+    observed_start = selected_time - pd.Timedelta(hours=6)
+    outcome_end = selected_time + pd.Timedelta(hours=2)
+    chart_window = patient_fixture.loc[
+        patient_fixture["timestamp"].between(
+            observed_start, outcome_end, inclusive="both"
+        )
+    ].sort_values("timestamp")
+    observed = chart_window.loc[chart_window["timestamp"].le(selected_time)]
+    actual_outcome = chart_window.loc[
+        chart_window["timestamp"].gt(selected_time)
+        & chart_window["timestamp"].le(outcome_end)
+    ]
+    chart = go.Figure()
+    chart.add_trace(
+        go.Scatter(
+            x=observed["timestamp"],
+            y=observed["libre_gl_mg_dl"],
+            mode="lines",
+            name="Observed",
+            line={"color": "#267C68", "width": 2},
+            connectgaps=False,
+        )
+    )
+    chart.add_trace(
+        go.Scatter(
+            x=actual_outcome["timestamp"],
+            y=actual_outcome["libre_gl_mg_dl"],
+            mode="lines",
+            name="Actual outcome (known in this retrospective replay)",
+            line={"color": "#B5483A", "width": 2},
+            connectgaps=False,
+        )
+    )
+    chart.add_vrect(
+        x0=selected_time,
+        x1=outcome_end,
+        fillcolor="rgba(245, 191, 175, 0.30)",
+        line_width=0,
+        annotation_text="Actual outcome (known in this retrospective replay)",
+        annotation_position="top left",
+    )
+    chart.add_vline(
+        x=selected_time,
+        line_dash="dash",
+        line_color="#173A36",
+        annotation_text="Prediction time",
+        annotation_position="top",
+    )
+    chart.add_hline(
+        y=180,
+        line_dash="dash",
+        line_color="gray",
+        annotation_text="180 mg/dL threshold",
+        annotation_position="top right",
+    )
+    chart.update_layout(
+        title="Observed glucose and retrospective outcome",
+        xaxis_title="Time",
+        yaxis_title="Glucose (mg/dL)",
+    )
+    st.plotly_chart(chart, width="stretch")
+
+    st.markdown("#### Predicted: model output")
+    st.metric("Out-of-fold probability", f"{float(prediction['y_prob']):.1%}")
+    st.metric(
+        "Alert at the fixed 50% cutoff",
+        "yes" if int(prediction["y_pred"]) == 1 else "no",
+    )
+    st.caption(
+        "Retrospective replay of out-of-fold predictions on synthetic data. "
+        "Not a live prediction."
+    )
+
+    st.markdown("#### Observed context (previous 2 hours)")
+    context_start = selected_time - pd.Timedelta(hours=2)
+    context = patient_fixture.loc[
+        patient_fixture["timestamp"].ge(context_start)
+        & patient_fixture["timestamp"].lt(selected_time)
+    ]
+    meal_rows = context.loc[context["meal_type"].notna()]
+    if meal_rows.empty:
+        meal_summary = "not recorded"
+    else:
+        meal_summary = "; ".join(
+            f"{row.meal_type} at {row.timestamp:%H:%M}"
+            + (
+                f" ({row.meal_carbs_g:g} g carbs)"
+                if pd.notna(row.meal_carbs_g)
+                else ""
+            )
+            for row in meal_rows.itertuples()
+        )
+
+    heart_rate = pd.to_numeric(context["heart_rate_bpm"], errors="coerce").dropna()
+    heart_rate_summary = (
+        f"{heart_rate.mean():.1f} bpm (mean)" if not heart_rate.empty else "not recorded"
+    )
+    activity_mets = pd.to_numeric(context["activity_mets"], errors="coerce").dropna()
+    activity_steps = pd.to_numeric(context["steps"], errors="coerce").dropna()
+    activity_summary = []
+    if not activity_mets.empty:
+        activity_summary.append(f"{activity_mets.mean():.2f} METs (mean)")
+    else:
+        activity_summary.append("METs: not recorded")
+    if not activity_steps.empty:
+        activity_summary.append(f"{activity_steps.sum():,.0f} steps (observed total)")
+    else:
+        activity_summary.append("steps: not recorded")
+    sampling_interval_minutes = _median_sampling_interval_minutes(patient_fixture)
+    context_table = pd.DataFrame(
+        [
+            {"Observed signal": "Meals", "Observed value": meal_summary},
+            {"Observed signal": "Heart rate", "Observed value": heart_rate_summary},
+            {"Observed signal": "Activity", "Observed value": "; ".join(activity_summary)},
+        ]
+    )
+    st.dataframe(context_table, width="stretch", hide_index=True)
+    st.caption(
+        "Synthetic signals are generated independently and are not physiologically "
+        "coupled (for example, steps and METs do not constrain each other)."
+    )
+
+    st.markdown("#### Observed data quality (6-hour window)")
+    quality = _glucose_window_quality(
+        patient_fixture, selected_time, 6, sampling_interval_minutes
+    )
+    quality_table = pd.DataFrame(
+        [
+            {
+                "Observed data-quality measure": "Missing glucose readings",
+                "Value": quality["missing_display"],
+            },
+            {
+                "Observed data-quality measure": "Age of latest glucose reading",
+                "Value": quality["latest_reading_age"],
+            },
+        ]
+    )
+    st.dataframe(quality_table, width="stretch", hide_index=True)
 
 
 def main() -> None:
@@ -502,6 +790,7 @@ def main() -> None:
     _render_oof_explorer(oof)
     _render_model_diagnostics(oof, summary.get("report", {}).get("oof_metrics", {}))
     _render_synthetic_timeline(fixture, oof)
+    _render_patient_view(fixture, oof)
 
 
 if __name__ == "__main__":
