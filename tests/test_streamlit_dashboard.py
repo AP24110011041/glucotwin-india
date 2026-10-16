@@ -7,11 +7,42 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from streamlit.testing.v1 import AppTest
 
-from app.app import load_demo_bundle
+from app.app import _calibration_bin_metadata, _table_value, load_demo_bundle
 from src.run_lopo import generate_synthetic_smoke_fixture
 
+
+
+@pytest.fixture(autouse=True)
+def keep_synthetic_oof_csv_in_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    protected_path = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "synthetic_demo"
+        / "synthetic_oof_predictions.csv"
+    ).resolve()
+    captured: dict[str, pd.DataFrame] = {}
+    original_to_csv = pd.DataFrame.to_csv
+    original_read_csv = pd.read_csv
+
+    def is_protected_path(value) -> bool:
+        return isinstance(value, (str, Path)) and Path(value).resolve() == protected_path
+
+    def to_csv_in_memory(frame, path_or_buf=None, *args, **kwargs):
+        if is_protected_path(path_or_buf):
+            captured["oof"] = frame.copy()
+            return None
+        return original_to_csv(frame, path_or_buf, *args, **kwargs)
+
+    def read_csv_in_memory(filepath_or_buffer, *args, **kwargs):
+        if is_protected_path(filepath_or_buffer):
+            return captured["oof"].copy()
+        return original_read_csv(filepath_or_buffer, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", to_csv_in_memory)
+    monkeypatch.setattr(pd, "read_csv", read_csv_in_memory)
 
 
 def _prediction_expander(app: AppTest):
@@ -71,6 +102,9 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         and "not for medical decision-making" in element.value
         for element in app.markdown
     )
+    assert "**Synthetic research prototype — not clinically validated and not for medical decision-making.**" in [
+        element.value for element in app.markdown
+    ]
 
     main_markdown = "\n".join(element.value for element in app.markdown)
     assert "Synthetic data status" not in main_markdown
@@ -93,14 +127,107 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         summary["model_input_streams"]["dynamic_predictor_count"]
     )
     assert len(app.get("plotly_chart")) == 5
+    comparison_tables = [
+        element for element in app.dataframe if "Forecast" in element.value.columns
+    ]
+    anchor_table = next(
+        element for element in comparison_tables if "Precision" in element.value.columns
+    )
+    event_table = next(
+        element for element in comparison_tables if "False alerts/hr" in element.value.columns
+    )
+    assert json.loads(anchor_table.proto.columns)["_index"]["hidden"] is True
+    assert json.loads(event_table.proto.columns)["_index"]["hidden"] is True
+    assert anchor_table.value.iloc[0]["Forecast"] == "Training-fold majority"
+    model_event = event_table.value.loc[
+        event_table.value["Forecast"].eq("LightGBM at 0.5")
+    ].iloc[0]
     assert any(
-        element.value.iloc[0]["Forecast"] == "Training-fold majority"
-        for element in app.dataframe
+        f"At the 0.5 cutoff the model caught {model_event['Matched events']} of "
+        f"{model_event['Events']} events and raised "
+        f"{model_event['False alert episodes']} false-alert episodes." in element.value
+        for element in app.markdown
+    )
+    assert any(
+        f"Only {model_event['Events']} events across 4 synthetic participants: too few for reliable rates."
+        in element.value
+        for element in app.markdown
+    )
+
+    figures = [json.loads(element.proto.spec) for element in app.get("plotly_chart")]
+    roc_figure = figures[0]
+    assert "AUROC:" in roc_figure["layout"]["title"]["text"]
+    assert roc_figure["layout"]["shapes"][0]["line"]["dash"] == "dash"
+    pr_figure = figures[1]
+    assert "AUPRC:" in pr_figure["layout"]["title"]["text"]
+    assert "prevalence:" in pr_figure["layout"]["title"]["text"]
+    assert any(
+        shape["type"] == "line" and shape["line"]["dash"] == "dash"
+        for shape in pr_figure["layout"]["shapes"]
+    )
+    reliability_figure = figures[2]
+    assert "20+ anchors" in str(reliability_figure["data"][0]["customdata"])
+    assert "Anchors per bin" in reliability_figure["data"][0]["hovertemplate"]
+    assert any(
+        element.value == "Few anchors per bin; this does not establish calibration."
+        for element in app.caption
+    )
+    timeline = next(
+        figure
+        for figure in figures
+        if figure["layout"]["title"]["text"].startswith("Synthetic glucose history")
+    )
+    assert any(
+        annotation.get("text") == "180 mg/dL threshold"
+        for annotation in timeline["layout"].get("annotations", [])
+    )
+    assert any(
+        element.label == "Show model risk (out-of-fold)" and element.value is False
+        for element in app.checkbox
     )
     participants = next(
         element for element in app.number_input if element.label == "Participants"
     )
     assert participants.min == 4
+def test_undefined_table_metrics_show_a_reason() -> None:
+    assert _table_value(None, "no monitored hours") == "n/a (no monitored hours)"
+    assert _table_value(np.nan, "no positive events") == "n/a (no positive events)"
+
+
+def test_reliability_bins_below_twenty_anchors_are_marked_low_sample() -> None:
+    bin_counts, sample_labels = _calibration_bin_metadata(pd.Series(np.linspace(0, 1, 19)))
+
+    assert (bin_counts < 20).all()
+    assert set(sample_labels) == {"Low sample (<20 anchors)"}
+
+
+def test_timeline_optional_oof_risk_uses_secondary_probability_axis() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=60)
+
+    checkbox = next(
+        element
+        for element in app.checkbox
+        if element.label == "Show model risk (out-of-fold)"
+    )
+    checkbox.set_value(True).run(timeout=60)
+
+    timeline = next(
+        json.loads(element.proto.spec)
+        for element in app.get("plotly_chart")
+        if json.loads(element.proto.spec)["layout"]["title"]["text"].startswith(
+            "Synthetic glucose history"
+        )
+    )
+    risk_trace = next(
+        trace
+        for trace in timeline["data"]
+        if trace.get("name") == "Model risk (OOF probability)"
+    )
+    assert risk_trace["yaxis"] == "y2"
+    assert timeline["layout"]["yaxis2"]["range"] == [0, 1]
+
+
 def test_run_form_updates_evaluation_and_oof_filters_predictions() -> None:
     app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
     app = AppTest.from_file(str(app_path)).run(timeout=60)
