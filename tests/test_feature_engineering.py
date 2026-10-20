@@ -323,6 +323,80 @@ def test_meal_nutrient_missingness_is_distinct_from_measured_zero() -> None:
     assert features.loc[1, "meal_event_observed_at_timestamp"] == 1
 
 
+def test_explicit_meal_with_zero_nutrients_remains_a_meal_event() -> None:
+    normalized = _normalized([120.0] * 3)
+    nutrient_columns = [
+        "meal_calories",
+        "meal_carbs_g",
+        "meal_protein_g",
+        "meal_fat_g",
+        "meal_fiber_g",
+        "meal_sugar_g",
+        "meal_amount_consumed_pct",
+    ]
+    normalized.loc[0, "meal_type"] = "Breakfast"
+    normalized.loc[0, nutrient_columns] = 0.0
+
+    features = build_features(normalized)
+
+    assert features.loc[0, "meal_event_observed_at_timestamp"] == 1
+    assert features.loc[0, "meal_type_last_120m"] == "breakfast"
+    assert features.loc[1, "meal_type_last_120m"] == "breakfast"
+
+
+def test_meal_type_last_120m_uses_inclusive_boundary_then_expires() -> None:
+    normalized = _normalized([120.0] * 122)
+    normalized.loc[0, "meal_type"] = "Lunch"
+
+    features = build_features(normalized)
+
+    assert features.loc[0, "meal_type_last_120m"] == "lunch"
+    assert features.loc[120, "meal_type_last_120m"] == "lunch"
+    assert features.loc[121, "meal_type_last_120m"] == "none"
+
+
+def test_meal_type_last_120m_uses_none_when_no_meal_event_exists() -> None:
+    features = build_features(_normalized([120.0] * 4))
+
+    assert features["meal_type_last_120m"].tolist() == ["none"] * 4
+
+
+def test_meal_type_last_120m_marks_missing_and_unrecognized_event_types_unknown() -> None:
+    normalized = _normalized([120.0] * 4)
+    normalized.loc[0, "meal_carbs_g"] = 30.0
+    normalized.loc[1, "meal_type"] = "Brunch"
+
+    features = build_features(normalized)
+
+    assert features.loc[0, "meal_type_last_120m"] == "unknown"
+    assert features.loc[1, "meal_type_last_120m"] == "unknown"
+    assert features.loc[3, "meal_type_last_120m"] == "unknown"
+
+
+def test_meal_type_last_120m_selects_the_most_recent_meal_type() -> None:
+    normalized = _normalized([120.0] * 8)
+    normalized.loc[0, "meal_type"] = "lunch"
+    normalized.loc[5, "meal_type"] = " DINNER "
+
+    features = build_features(normalized)
+
+    assert features.loc[4, "meal_type_last_120m"] == "lunch"
+    assert features.loc[5, "meal_type_last_120m"] == "dinner"
+    assert features.loc[7, "meal_type_last_120m"] == "dinner"
+
+
+def test_future_meal_event_does_not_change_earlier_meal_type_feature() -> None:
+    baseline = _normalized([120.0] * 20)
+    with_future_meal = baseline.copy()
+    with_future_meal.loc[15, "meal_type"] = "dinner"
+
+    baseline_features = build_features(baseline)
+    future_features = build_features(with_future_meal)
+
+    assert baseline_features.loc[10, "meal_type_last_120m"] == "none"
+    assert future_features.loc[10, "meal_type_last_120m"] == "none"
+
+
 def test_static_ehr_join_uses_normalized_patient_ids(tmp_path: Path) -> None:
     bio_path = tmp_path / "bio.csv"
     pd.DataFrame(

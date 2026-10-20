@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.run_lopo import generate_synthetic_smoke_fixture, run_smoke_test
+from src.inference import build_scenario_timeseries, predict_new_scenario
+from src.feature_engineering import TARGET_HORIZON_MINUTES
 
 APP_TITLE = "GlucoTwin India"
 SYNTHETIC_BANNER = "Synthetic research prototype — not clinically validated and not for medical decision-making."
@@ -27,16 +30,15 @@ DEFAULT_DEMO_CONFIG = {"seed": 42, "n_participants": 4, "days": 2}
 @st.cache_data(show_spinner=False)
 def load_demo_bundle(seed: int = 42, n_participants: int = 4, days: int = 2) -> dict[str, Any]:
     """Build the deterministic synthetic demo bundle used by the dashboard."""
-    DEMO_DIR.mkdir(parents=True, exist_ok=True)
-    summary = run_smoke_test(
-        output_dir=DEMO_DIR,
-        seed=seed,
-        feature_set="full",
-        n_participants=n_participants,
-        days=days,
-    )
-    oof_path = DEMO_DIR / "synthetic_oof_predictions.csv"
-    oof = pd.read_csv(oof_path)
+    with tempfile.TemporaryDirectory(prefix="glucotwin-dashboard-") as output_dir:
+        summary = run_smoke_test(
+            output_dir=output_dir,
+            seed=seed,
+            feature_set="full",
+            n_participants=n_participants,
+            days=days,
+        )
+        oof = pd.read_csv(Path(output_dir) / "synthetic_oof_predictions.csv")
     fixture = generate_synthetic_smoke_fixture(seed=seed, n_participants=n_participants, days=days)
     return {
         "summary": summary,
@@ -754,6 +756,272 @@ def _render_patient_view(fixture: pd.DataFrame, oof: pd.DataFrame) -> None:
     st.dataframe(quality_table, width="stretch", hide_index=True)
 
 
+def _render_new_scenario(fixture: pd.DataFrame) -> None:
+    st.subheader("New Synthetic Scenario")
+    st.caption(
+        "This is a newly fitted synthetic-model scenario, separate from historical "
+        "out-of-fold predictions. It is exploratory only, not clinically validated, "
+        "and not for medical decision-making."
+    )
+
+    recent_synthetic_meals = fixture.loc[
+        fixture["meal_type"].notna(),
+        ["patient_id", "timestamp", "meal_type", "meal_carbs_g"],
+    ].sort_values("timestamp").tail(5).copy()
+    if not recent_synthetic_meals.empty:
+        recent_synthetic_meals.insert(0, "Source", "Synthetic reference (not used)")
+        st.markdown("**Recent synthetic meal history**")
+        st.dataframe(recent_synthetic_meals, width="stretch", hide_index=True)
+
+    st.markdown("**Manual meals for this scenario**")
+    st.caption(
+        "Add rows to record meals; edit cells or remove rows directly. These manual "
+        "entries are used only for this scenario and are not the synthetic meals above."
+    )
+    st.caption(
+        "Carbohydrate totals, time since a meal, and the latest meal type within "
+        "120 minutes enter model features. Missing or unrecognized types become "
+        "unknown; no recent meal becomes none; conflicting same-time manual types "
+        "become mixed. Existing breakfast/lunch/dinner indicators remain timestamp-local."
+    )
+    empty_meals = pd.DataFrame(
+        {
+            "meal_type": pd.Series(dtype="str"),
+            "carbs_g": pd.Series(dtype="float"),
+            "minutes_since_eating": pd.Series(dtype="int"),
+        }
+    )
+    empty_history = pd.DataFrame(
+        {
+            "timestamp": pd.Series(dtype="str"),
+            "glucose_mg_dl": pd.Series(dtype="float"),
+            "heart_rate_bpm": pd.Series(dtype="float"),
+            "activity_mets": pd.Series(dtype="float"),
+        }
+    )
+    with st.form("new_scenario_prediction"):
+        timestamp = st.text_input(
+            "Scenario timestamp (YYYY-MM-DD HH:MM)", value="2025-01-03 12:00"
+        )
+        current_glucose, heart_rate, activity_mets = st.columns(3)
+        glucose_value = current_glucose.number_input(
+            "Current glucose (mg/dL)", min_value=20.0, max_value=600.0, value=140.0
+        )
+        heart_rate_available = heart_rate.checkbox(
+            "Heart rate measured", value=False
+        )
+        heart_rate_value = heart_rate.number_input(
+            "Heart rate (bpm)",
+            min_value=20.0,
+            max_value=250.0,
+            value=72.0,
+            disabled=not heart_rate_available,
+        )
+        activity_mets_available = activity_mets.checkbox("METs measured", value=False)
+        mets_value = activity_mets.number_input(
+            "Activity (METs)",
+            min_value=0.0,
+            max_value=25.0,
+            value=1.0,
+            disabled=not activity_mets_available,
+        )
+        activity_calories, activity_intensity, steps = st.columns(3)
+        calories_available = activity_calories.checkbox(
+            "Calories measured", value=False
+        )
+        calories_value = activity_calories.number_input(
+            "Activity calories",
+            min_value=0.0,
+            max_value=5000.0,
+            value=0.0,
+            disabled=not calories_available,
+        )
+        intensity_available = activity_intensity.checkbox(
+            "Intensity measured", value=False
+        )
+        intensity_value = activity_intensity.number_input(
+            "Activity intensity",
+            min_value=0.0,
+            max_value=100.0,
+            value=0.0,
+            disabled=not intensity_available,
+        )
+        steps_available = steps.checkbox("Steps measured", value=False)
+        steps_value = steps.number_input(
+            "Steps",
+            min_value=0.0,
+            max_value=100000.0,
+            value=0.0,
+            disabled=not steps_available,
+        )
+        st.markdown("**Recent measurements (optional)**")
+        st.caption(
+            "Add timestamped glucose or wearable readings from the prior 120 minutes. "
+            "Unentered values remain missing and are imputed by the trained pipeline."
+        )
+        history_table = st.data_editor(
+            empty_history,
+            num_rows="dynamic",
+            column_config={
+                "timestamp": st.column_config.TextColumn(
+                    "Timestamp (YYYY-MM-DD HH:MM)", required=True
+                ),
+                "glucose_mg_dl": st.column_config.NumberColumn(
+                    "Libre glucose (mg/dL)", min_value=20.0, max_value=600.0
+                ),
+                "heart_rate_bpm": st.column_config.NumberColumn(
+                    "Heart rate (bpm)", min_value=20.0, max_value=250.0
+                ),
+                "activity_mets": st.column_config.NumberColumn(
+                    "Activity (METs)", min_value=0.0, max_value=25.0
+                ),
+            },
+            width="stretch",
+            hide_index=True,
+            key="scenario_measurement_history",
+        )
+        profile_columns = st.columns(4)
+        age = profile_columns[0].number_input(
+            "Age (synthetic profile)", min_value=18.0, max_value=120.0, value=45.0
+        )
+        diabetes_duration = profile_columns[1].number_input(
+            "Diabetes duration (years)", min_value=0.0, max_value=100.0, value=5.0
+        )
+        bmi = profile_columns[2].number_input(
+            "BMI (synthetic profile)", min_value=10.0, max_value=100.0, value=25.0
+        )
+        a1c = profile_columns[3].number_input(
+            "HbA1c (synthetic profile)", min_value=3.0, max_value=25.0, value=7.0
+        )
+        genders = sorted(fixture["gender"].dropna().astype(str).unique().tolist())
+        diagnoses = sorted(fixture["diagnosis"].dropna().astype(str).unique().tolist())
+        gender_column, diagnosis_column = st.columns(2)
+        gender = gender_column.selectbox("Gender (synthetic model input)", genders)
+        diagnosis = diagnosis_column.selectbox(
+            "Diagnosis (synthetic model input)", diagnoses
+        )
+        meal_table = st.data_editor(
+            empty_meals,
+            num_rows="dynamic",
+            column_config={
+                "meal_type": st.column_config.TextColumn(
+                    "Meal type (optional)",
+                    required=False,
+                    help="Known values: breakfast, lunch, dinner, snack, other. Blank or unrecognized values become unknown.",
+                ),
+                "carbs_g": st.column_config.NumberColumn(
+                    "Carbohydrate quantity (g)", min_value=0.0, max_value=300.0
+                ),
+                "minutes_since_eating": st.column_config.NumberColumn(
+                    "Time since eating (minutes)",
+                    min_value=0,
+                    max_value=TARGET_HORIZON_MINUTES,
+                ),
+            },
+            width="stretch",
+            hide_index=True,
+            key="manual_scenario_meals",
+        )
+        submitted = st.form_submit_button(
+            "Run synthetic scenario prediction", type="primary"
+        )
+
+    if submitted:
+        try:
+            scenario = build_scenario_timeseries(
+                patient_id="MANUAL-SCENARIO",
+                timestamp=timestamp,
+                current_glucose_mg_dl=glucose_value,
+                wearable_values={
+                    "heart_rate_bpm": heart_rate_value if heart_rate_available else None,
+                    "activity_calories": calories_value if calories_available else None,
+                    "activity_mets": mets_value if activity_mets_available else None,
+                    "activity_intensity": intensity_value if intensity_available else None,
+                    "steps": steps_value if steps_available else None,
+                },
+                history=history_table.dropna(how="all").to_dict("records"),
+                meals=meal_table.dropna(how="all").to_dict("records"),
+                static_profile={
+                    "age_years": age,
+                    "gender": gender,
+                    "diagnosis": diagnosis,
+                    "diabetes_duration_years": diabetes_duration,
+                    "bmi": bmi,
+                    "a1c_pdl_lab": a1c,
+                },
+            )
+            result = predict_new_scenario(fixture, scenario)
+        except (TypeError, ValueError) as error:
+            st.session_state.pop("new_scenario_result", None)
+            st.error(f"Scenario input is invalid: {error}")
+        else:
+            st.session_state["new_scenario_result"] = result
+
+    result = st.session_state.get("new_scenario_result")
+    if result:
+        probability_column, output_column = st.columns(2)
+        probability_column.metric(
+            "New-scenario model probability", f"{result['probability']:.1%}"
+        )
+        output_column.metric(
+            "Fixed 50% model output",
+            "threshold event predicted" if result["prediction"] else "not predicted",
+        )
+        st.progress(result["probability"], text="Synthetic model output; not calibrated for clinical use")
+        st.caption(
+            f"Prediction horizon: {result['prediction_horizon_minutes']} minutes | "
+            f"Libre target: >{result['target_threshold_mg_dl']:.0f} mg/dL | "
+            f"Input time: {result['timestamp']} | Features: {result['feature_count']} | "
+            f"Synthetic training participants: {result['training_participant_count']}"
+        )
+        input_summary = result["input_summary"]
+        heart_rate_display = (
+            f"{input_summary['heart_rate_bpm']:.0f} bpm"
+            if input_summary["heart_rate_bpm"] is not None
+            else "missing"
+        )
+        activity_display = (
+            f"{input_summary['activity_mets']:.1f} METs"
+            if input_summary["activity_mets"] is not None
+            else "missing"
+        )
+        calories_display = (
+            f"{input_summary['activity_calories']:.1f} kcal"
+            if input_summary["activity_calories"] is not None
+            else "missing"
+        )
+        intensity_display = (
+            f"{input_summary['activity_intensity']:.1f}"
+            if input_summary["activity_intensity"] is not None
+            else "missing"
+        )
+        steps_display = (
+            f"{input_summary['steps']:.0f}"
+            if input_summary["steps"] is not None
+            else "missing"
+        )
+        st.caption(
+            f"Inputs: glucose {input_summary['current_glucose_mg_dl']:.1f} mg/dL | "
+            f"heart rate {heart_rate_display} | activity {activity_display} | "
+            f"calories {calories_display} | intensity {intensity_display} | "
+            f"steps {steps_display} | "
+            f"manual meal events in 120 minutes: "
+            f"{input_summary['meal_events_last_120_minutes']}"
+        )
+        if result["missing_feature_count"]:
+            st.warning(
+                f"{result['missing_feature_count']} of {result['feature_count']} model "
+                "inputs are missing at this scenario timestamp and are handled by "
+                "training-fitted imputation. Review the measurement history before "
+                "interpreting this exploratory output."
+            )
+        st.warning(
+            "Synthetic-only exploratory output. This probability is not clinically "
+            "validated or calibrated; no calibrated uncertainty interval is available. "
+            "It is not a medical recommendation."
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title="GlucoTwin India Demo", page_icon="🧪")
     st.title("GlucoTwin India")
@@ -799,6 +1067,7 @@ def main() -> None:
     _render_oof_explorer(oof)
     _render_model_diagnostics(oof, summary.get("report", {}).get("oof_metrics", {}))
     _render_synthetic_timeline(fixture, oof)
+    _render_new_scenario(fixture)
     _render_patient_view(fixture, oof)
 
 

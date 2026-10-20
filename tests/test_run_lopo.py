@@ -37,6 +37,34 @@ def test_synthetic_fixture_has_patient_wise_targets_and_synthetic_tags() -> None
     assert fixture.groupby("patient_id")["target"].nunique().min() >= 2
 
 
+def test_synthetic_meal_nutrients_are_missing_between_explicit_meal_events() -> None:
+    fixture = generate_synthetic_smoke_fixture(seed=42, n_participants=4, days=1)
+    nutrient_columns = [
+        "meal_calories",
+        "meal_carbs_g",
+        "meal_protein_g",
+        "meal_fat_g",
+        "meal_fiber_g",
+        "meal_sugar_g",
+        "meal_amount_consumed_pct",
+    ]
+    event_mask = fixture["meal_type"].notna()
+
+    assert fixture.loc[event_mask, nutrient_columns].notna().all().all()
+    assert fixture.loc[~event_mask, nutrient_columns].isna().all().all()
+
+    features = build_features(fixture)
+    for patient_id, patient_rows in fixture.groupby("patient_id", sort=True):
+        first_meal = patient_rows.loc[patient_rows["meal_type"].notna()].iloc[0]
+        anchor_time = first_meal["timestamp"].ceil("10min")
+        anchor_feature = features.loc[
+            features["patient_id"].eq(patient_id)
+            & features["timestamp"].eq(anchor_time),
+            "meal_type_last_120m",
+        ].iloc[0]
+        assert anchor_feature == first_meal["meal_type"]
+
+
 def test_synthetic_fixture_targets_match_production_120_minute_labels() -> None:
     fixture = generate_synthetic_smoke_fixture(seed=23, n_participants=4, days=2)
     expected = build_features(fixture)["glucose_over_180_next_2h"]
@@ -82,6 +110,7 @@ def test_static_and_dynamic_synthetic_streams_reach_lopo_predictors() -> None:
         "glucose_current_mg_dl",
         "heart_rate_bpm_current",
         "meal_carbs_g_sum_15m",
+        "meal_type_last_120m",
     }
 
     assert static_features.issubset(evaluation_data.predictor_columns)

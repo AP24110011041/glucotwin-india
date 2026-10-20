@@ -1,0 +1,67 @@
+# Competition Submission Notes
+
+This document describes the current repository state, not completed real-data research. The dashboard and smoke runner use synthetic data only.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Source["Optional local source CSVs"] --> Inspect["src/inspect_data.py"]
+    Source --> Engineer["src/feature_engineering.py"]
+    Engineer --> LocalFeatures["Local normalized series, features, eligibility summary"]
+    Profiles["src/synth_data.py: synthetic EHR profiles"] --> Join["Join by patient_id"]
+    Dynamic["src/run_lopo.py: 1-minute synthetic CGM, meals, wearables"] --> Join
+    Join --> Runner["Synthetic smoke runner"]
+    Generator["src/synth_data.py: separate 5-minute CSV series"] --> SyntheticFiles["Local synthetic CSVs; not model input"]
+    Runner --> Eval["src/evaluation.py: anchors, LOPO, fold-fitted preprocessing, metrics"]
+    Eval --> Artifacts["Synthetic OOF CSV and JSON summary on stdout"]
+    Artifacts --> Dashboard["app/app.py: Streamlit and Plotly"]
+    Dashboard --> Scenario["src/inference.py: validated scenario inputs, same 151 predictors, fresh synthetic fit"]
+    LocalFeatures -. "Callable evaluation API; no real-data run verified" .-> Eval
+```
+
+The dataset inspector and feature-engineering command operate on files explicitly supplied by the user. The dashboard runner constructs its own one-minute dynamic fixture, obtains a separate deterministic synthetic profile table from the shared profile generator, and joins static fields to dynamic rows by participant ID before feature generation and LOPO training. It does not read the five-minute CSV series written by `src/synth_data.py`, CGMacros files, or processed real data. No real-time hardware stream is connected.
+
+## Presentation Outline
+
+1. **Problem and scope:** Predict a future Libre threshold event as an exploratory software objective; make no clinical utility claim.
+2. **Endpoint and data flow:** Libre >180 mg/dL in `(t, t+120 minutes]`; strict threshold, coverage rules, and separation of raw, processed, and synthetic paths.
+3. **Evaluation design:** Patient-relative 10-minute anchors, one held-out participant per LOPO fold, training-fold preprocessing, fixed 0.5 cutoff, and training-majority baseline.
+4. **Working prototype:** Show the synthetic-only dashboard, OOF explorer, ROC/PR and reliability diagnostics, event comparison, synthetic timeline, and the separate new-scenario flow with manual meals and missing-input disclosure.
+5. **Evidence gaps:** Present no real-data score until permissions, source-signal interpretation, execution evidence, and independent review are complete.
+
+## Corrected Synthetic Evaluation
+
+The saved seed-42 run uses 4 synthetic participants, 2 days, 4 LOPO folds, and 1,104 eligible anchors. With the corrected meal-event fixture and all 151 predictors, pooled OOF AUROC is 0.8519, AUPRC 0.6012, prevalence 0.1159, and Brier score 0.0726. The same-fixture ablation without `meal_type_last_120m` reports AUROC 0.8451, AUPRC 0.6077, and Brier score 0.0720. Results are mixed; do not claim an overall improvement. Event counts and false-alert rates are synthetic-only and are not clinical evidence or validation.
+
+Do not add results, participant counts, citations, awards, or challenge requirements unless supported by the exact source and recorded run evidence.
+
+## Demo Script
+
+From the repository root in PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pytest -p no:cacheprovider tests/ -q
+python -m src.run_lopo --smoke-test --output-dir data/processed/synthetic-smoke
+python -m streamlit run app/app.py
+```
+
+In the app, keep the synthetic disclaimer visible, show Overview and its class prevalence/baseline comparison, filter the OOF Explorer by participant/fold, inspect the probability and reliability diagnostics, then show the synthetic glucose timeline. In New Synthetic Scenario, add a recent reading and a manual meal, submit the form, and point out the fixed horizon, target threshold, and missing-feature count. Explain that the prediction fits a fresh model on synthetic training participants and is not a clinically accurate probability. State that every plotted value and score is synthetic and demonstrates software behavior only. Do not open or display local real-data files during this demo unless their rights and handling have been verified separately.
+
+## Submission Checklist
+
+
+## Ranked Blockers and Evidence Needed
+
+1. **Data permissions and competition terms:** Current permitted use, redistribution, derived output, attribution, and deadline/rubric requirements need confirmation from authoritative documents. The official PhysioNet page could not be independently retrieved during this review; README's license note is not a substitute for current legal verification.
+2. **Real-data scientific evidence:** No real-data pipeline run or model result was produced or reviewed in this work. Required evidence includes the exact source archive/hash, code revision, environment, participant-level eligibility, fold assignments, baseline results, OOF predictions, and metric definitions.
+3. **Signal semantics:** Source acquisition cadence versus upstream interpolation remains unresolved. Obtain source documentation and validate temporal assumptions before interpreting windows or event exposure as device-measured time.
+4. **External validation and calibration:** Synthetic reliability plots and Brier scores are software diagnostics, not real-data calibration evidence. Any real-data calibration procedure, operating point, and uncertainty plan must be pre-specified and evaluated without held-out-patient leakage.
+5. **Reproducible submission package:** `requirements.txt` is not a fully locked environment, the run-manifest helper is not wired into the smoke command, and the tracked presentation PDF's readiness against the official final-submission requirements is not confirmed; no real-data report exists. Record versions and hashes for any permitted real-data evaluation; follow the challenge's actual submission format.
+
+## Readiness Summary
+
+The synthetic software prototype now includes a tested new-scenario prediction workflow, but no real-data scientific validation or clinical readiness is established. The incubator is reported as `None`. Competition submission remains incomplete: the genuine 20+ minute demo video, licensing authority confirmation, dataset permissions, official rubric confirmation, and public PDF access checks are outstanding. These are evidence gaps, not percentage-complete estimates.

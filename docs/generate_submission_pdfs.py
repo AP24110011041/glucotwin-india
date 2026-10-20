@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-import tempfile
+import json
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -16,8 +16,6 @@ from matplotlib.backends.backend_pdf import PdfPages
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from src.run_lopo import run_smoke_test
 
 OUTPUT_DIR = Path(__file__).resolve().parent
 ARCHITECTURE_PATH = OUTPUT_DIR / "architecture_diagram.pdf"
@@ -96,7 +94,8 @@ def _architecture_diagram() -> None:
     _arrow(axis, (0.82, 0.39), (0.88, 0.39), color="cyan")
     _box(axis, 0.62, 0.12, 0.355, 0.11, "Streamlit + Plotly", "Overview | OOF Explorer | Model Diagnostics | Synthetic Timeline", color="green", title_size=10, body_size=8)
     _arrow(axis, (0.925, 0.31), (0.83, 0.23), color="cyan", connection="arc3,rad=-0.25")
-    axis.text(0.055, 0.085, "src/synth_data.py also writes a separate 5-minute CSV series; the runner reuses its profile helper, not that dynamic CSV.", fontsize=7.5, color=COLORS["muted"])
+    axis.text(0.055, 0.065, "New scenario: validated current/history inputs + manual meals -> same 151 ordered predictors -> fresh synthetic-only fit -> separate output.", fontsize=7.2, color=COLORS["green"])
+    axis.text(0.055, 0.045, "src/synth_data.py writes a separate 5-minute CSV series; the runner reuses its profile helper, not that dynamic CSV.", fontsize=7.0, color=COLORS["muted"])
     figure.savefig(ARCHITECTURE_PATH, format="pdf", bbox_inches="tight")
     plt.close(figure)
 
@@ -115,7 +114,9 @@ def _bullet_list(axis: Any, items: list[str], x: float = 0.08, y: float = 0.76, 
         y -= len(lines) * 0.041 + gap
 
 
-def _presentation(summary: dict[str, Any]) -> None:
+def _presentation(
+    summary: dict[str, Any], ablation_summary: dict[str, Any] | None = None
+) -> None:
     total = 9
     with PdfPages(PRESENTATION_PATH) as pdf:
         figure, axis = _new_page("GlucoTwin India", "Type 2 diabetes glucose-risk prediction prototype | SRM University AP", 1, total)
@@ -125,7 +126,7 @@ def _presentation(summary: dict[str, Any]) -> None:
         axis.text(0.105, 0.37, DISCLAIMER, fontsize=13, weight="bold", color=COLORS["coral"], va="center")
         axis.text(0.08, 0.255, "Team: mathin7225 | 2 members", fontsize=11, color=COLORS["muted"])
         axis.text(0.08, 0.205, "Leader: Shaik Mahammad Mathin (SRM University AP) | Teammate: Shaik Sameera Kowsar (Tirumala Engineering College)", fontsize=8.7, color=COLORS["muted"])
-        axis.text(0.08, 0.155, "Incubator: [ADD VERIFIED NAME OR NONE] | Video: [ADD UNLISTED YOUTUBE URL, 20+ MINUTES]", fontsize=8.7, color=COLORS["muted"])
+        axis.text(0.08, 0.155, "Incubator: None | Video: PENDING genuine unlisted URL (20+ minutes)", fontsize=8.7, color=COLORS["muted"])
         pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
         figure, axis = _new_page("Problem and healthcare use case", "A software research objective, not a clinical intervention.", 2, total)
@@ -150,7 +151,7 @@ def _presentation(summary: dict[str, Any]) -> None:
         _box(axis, 0.55, 0.25, 0.25, 0.16, "Dashboard", "Streamlit views + Plotly diagnostics", color="green")
         _arrow(axis, (0.81, 0.57), (0.43, 0.41), color="cyan", connection="arc3,rad=0.12")
         _arrow(axis, (0.45, 0.33), (0.55, 0.33))
-        axis.text(0.08, 0.12, "Run manifest helper exists, but it is not wired into the smoke command. No real data or hardware stream enters this synthetic demo.", fontsize=10.5, color=COLORS["muted"], wrap=True)
+        axis.text(0.08, 0.12, "New-scenario inputs use the same ordered 151-feature schema, including recent meal type, and a fresh synthetic-only fit; output is separate from historical OOF replay. No real data or hardware stream enters this demo.", fontsize=10.5, color=COLORS["muted"], wrap=True)
         pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
         figure, axis = _new_page("Model and validation", "Configuration shown here is the actual deterministic synthetic smoke configuration.", 5, total)
@@ -175,8 +176,21 @@ def _presentation(summary: dict[str, Any]) -> None:
             axis.text(0.09, y, label, fontsize=11, color=COLORS["ink"])
             axis.text(0.40, y, f"Precision {result['anchor_precision']:.3f}   Recall {result['anchor_recall']:.3f}   F1 {result['anchor_f1']:.3f}", fontsize=11, color=COLORS["ink"])
         events = summary["report"]["lightgbm_lopo_summary"]["event_overall_metrics"][0]
-        axis.text(0.08, 0.22, f"LightGBM event summary: {events['actual_events']} synthetic events; {events['alert_episodes']} alert episodes; {events['matched_events']} matched; {events['false_alert_episodes']} false alert episodes; {events['false_alert_episodes_per_day']:.2f} false alerts per measured day.", fontsize=10.5, color=COLORS["muted"], wrap=True)
-        axis.text(0.08, 0.12, "These are generated-data software checks. They do not estimate performance on real people or establish clinical utility.", fontsize=10.5, color=COLORS["coral"], weight="bold", wrap=True)
+        axis.text(0.08, 0.25, f"LightGBM event summary: {events['actual_events']} synthetic events; {events['alert_episodes']} alert episodes; {events['matched_events']} matched; {events['false_alert_episodes']} false alert episodes; {events['false_alert_episodes_per_day']:.2f} false alerts per measured day.", fontsize=9.5, color=COLORS["muted"], wrap=True)
+        ablation_metrics = (
+            ablation_summary["report"]["oof_metrics"] if ablation_summary else None
+        )
+        ablation_text = (
+            "Same-data ablation without meal_type_last_120m: "
+            f"AUROC {ablation_metrics['auroc']:.3f}, "
+            f"AUPRC {ablation_metrics['auprc']:.3f}, "
+            f"Brier {ablation_metrics['brier_score']:.3f}. Mixed results; "
+            "no overall improvement claimed."
+            if ablation_metrics
+            else "Same-data feature-ablation report unavailable; no feature-benefit claim is made."
+        )
+        axis.text(0.08, 0.15, ablation_text, fontsize=8.5, color=COLORS["muted"], wrap=True)
+        axis.text(0.08, 0.065, "All figures are synthetic software checks. They do not establish clinical validity or utility.", fontsize=9.5, color=COLORS["coral"], weight="bold", wrap=True)
         pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
         figure, axis = _new_page("Dashboard demonstration", "All views below are rendered from the synthetic smoke bundle.", 7, total)
@@ -185,31 +199,65 @@ def _presentation(summary: dict[str, Any]) -> None:
             ("OOF Explorer", "Filter synthetic out-of-fold predictions by participant and held-out fold."),
             ("Model Diagnostics", "ROC and precision-recall curves, reliability diagram, fixed-cutoff confusion matrix, probability distribution."),
             ("Synthetic Glucose Timeline", "Plot the generated synthetic CGM history for a selected synthetic participant."),
+            ("New Synthetic Scenario", "Enter current and timestamped history measurements, add/edit/remove manual meals, then run a separate 120-minute scenario prediction with missing-input disclosure."),
         ]
         for index, (title, body) in enumerate(sections):
-            y = 0.72 - index * 0.145
-            _box(axis, 0.08, y, 0.84, 0.105, title, body, color=["green", "cyan", "lime", "amber"][index], title_size=11, body_size=9.5)
+            y = 0.75 - index * 0.13
+            _box(axis, 0.08, y, 0.84, 0.095, title, body, color=["green", "cyan", "lime", "amber", "coral"][index], title_size=10.5, body_size=8.5)
         pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
         figure, axis = _new_page("Limitations and future work", "The prototype demonstrates software behavior, not clinical validation.", 8, total)
-        _bullet_list(axis, ["No real CGMacros evaluation is evidenced; current metrics are synthetic only.", "The separate five-minute CSV time series is not consumed by the dashboard; the shared static profile helper and its separate one-minute dynamic fixture are combined by participant ID.", "Dataset use rights, citation, challenge rules, and redistribution requirements need current authoritative verification.", "Source signal acquisition cadence versus upstream interpolation and sensor delivery latency remain unknown; no real-time hardware is connected.", "Pooled AUROC/AUPRC/Brier do not have participant-bootstrap intervals; no fitted calibration or tuned operating point is provided.", "Future: verify rights and cadence; wire versioned data provenance/run manifests; evaluate per-patient eligibility and missingness; prespecify external validation and calibration; follow official submission format."], y=0.76, width=91, size=11.5, gap=0.01)
+        _bullet_list(axis, ["No real CGMacros evaluation is evidenced; current metrics and new-scenario training are synthetic only.", "The new-scenario probability is not calibrated or clinically validated; incomplete history leaves predictors missing and the pipeline imputes them.", "The separate five-minute CSV time series is not consumed by the dashboard; the shared static profile helper and its separate one-minute dynamic fixture are combined by participant ID.", "Dataset use rights, citation, challenge rules, and redistribution requirements need current authoritative verification.", "Source signal acquisition cadence versus upstream interpolation and sensor delivery latency remain unknown; no real-time hardware is connected.", "Pooled AUROC/AUPRC/Brier do not have participant-bootstrap intervals; no fitted calibration or tuned operating point is provided.", "Future: verify rights and cadence; wire versioned data provenance/run manifests; evaluate per-patient eligibility and missingness; prespecify external validation and calibration; follow official submission format."], y=0.76, width=91, size=10.5, gap=0.008)
         pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
         figure, axis = _new_page("Submission actions", "Complete personal, legal, and publication details before sharing the final package.", 9, total)
-        _bullet_list(axis, ["Team: mathin7225, 2 members. Leader: Shaik Mahammad Mathin (SRM University AP); teammate: Shaik Sameera Kowsar (Tirumala Engineering College). Incubator: [ADD VERIFIED NAME OR NONE].", "Video: [ADD UNLISTED YOUTUBE URL]; confirm duration is at least 20 minutes and link access works without requesting permission.", "License: MIT file prepared for original code only; replace the copyright-holder placeholder after ownership is confirmed. Third-party data/dependencies retain their own terms.", "Required folder convention: mathin7225_SRM University AP. Do not rename this Git repository.", "Public release: verify the repository and PDF links open in a signed-out browser; do not publish dataset contents or private identifiers."], y=0.76, width=93, size=11.5, gap=0.012)
+        _bullet_list(axis, ["Team: mathin7225, 2 members. Leader: Shaik Mahammad Mathin (SRM University AP); teammate: Shaik Sameera Kowsar (Tirumala Engineering College). Incubator: None, per current project information.", "Video: PENDING genuine unlisted URL; confirm duration is at least 20 minutes and link access works without requesting permission.", "License: MIT names Shaik Mahammad Mathin. The named holder must confirm authority to license all included contributions; third-party data/dependencies retain their own terms.", "Required folder convention: mathin7225_SRM University AP. Do not rename this Git repository. The package is incomplete until the video is supplied.", "Public release: verify the repository and PDF links open in a signed-out browser; do not publish dataset contents or private identifiers."], y=0.76, width=93, size=11.5, gap=0.012)
         pdf.savefig(figure, bbox_inches="tight"); plt.close(figure)
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="glucotwin-submission-") as temp_dir:
-        summary = run_smoke_test(
-            output_dir=Path(temp_dir), seed=42, feature_set="full",
-            n_participants=4, days=2,
+    corrected_report_path = (
+        ROOT / "data" / "processed" / "meal_type_corrected" / "summary.json"
+    )
+    ablation_report_path = (
+        ROOT
+        / "data"
+        / "processed"
+        / "meal_type_corrected_no_recent_type"
+        / "summary.json"
+    )
+    if not corrected_report_path.is_file():
+        raise FileNotFoundError(
+            "The corrected LOPO report is required to generate current submission PDFs."
         )
+    if not ablation_report_path.is_file():
+        raise FileNotFoundError(
+            "The same-fixture feature-ablation report is required for a supported comparison."
+        )
+    summary = json.loads(corrected_report_path.read_text(encoding="utf-8"))
+    ablation_summary = json.loads(
+        ablation_report_path.read_text(encoding="utf-8")
+    )
     if summary.get("synthetic_data") is not True:
         raise RuntimeError("Submission PDF metrics must come from the synthetic smoke path")
+    if (
+        summary.get("seed") != 42
+        or summary.get("feature_set") != "full"
+        or summary.get("fold_count") != 4
+        or summary.get("eligible_anchor_count") != 1104
+    ):
+        raise RuntimeError("Corrected report does not match the documented synthetic LOPO configuration")
+    if (
+        ablation_summary.get("synthetic_data") is not True
+        or ablation_summary.get("seed") != summary.get("seed")
+        or ablation_summary.get("feature_set") != summary.get("feature_set")
+        or ablation_summary.get("fold_count") != summary.get("fold_count")
+        or ablation_summary.get("eligible_anchor_count")
+        != summary.get("eligible_anchor_count")
+    ):
+        raise RuntimeError("Feature-ablation report is not comparable to the corrected LOPO report")
     _architecture_diagram()
-    _presentation(summary)
+    _presentation(summary, ablation_summary)
     print(f"Wrote {ARCHITECTURE_PATH}")
     print(f"Wrote {PRESENTATION_PATH}")
     print("All presentation metrics are from seed-42 synthetic smoke data.")

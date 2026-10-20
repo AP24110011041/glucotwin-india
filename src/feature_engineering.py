@@ -18,6 +18,9 @@ TARGET_THRESHOLD_MG_DL = 180.0
 TARGET_HORIZON_MINUTES = 120
 MAX_FEATURE_FORWARD_FILL_MINUTES = 5
 MAX_LABEL_CGM_GAP_MINUTES = 5
+MEAL_TYPE_CATEGORIES = frozenset(
+    {"breakfast", "lunch", "dinner", "snack", "other"}
+)
 
 PARTICIPANT_FILE_PATTERN = re.compile(r"^CGMacros-(\d+)\.csv$", re.IGNORECASE)
 UNNAMED_INDEX_PATTERN = re.compile(r"^unnamed_(\d+)$", re.IGNORECASE)
@@ -464,6 +467,43 @@ def _features_for_patient(
         feature_columns[f"meal_type_{meal_name}_at_timestamp"] = (
             normalized_meal_type.eq(meal_name).fillna(False).to_numpy(dtype="int8")
         )
+
+    def normalized_event_type(value: Any) -> str:
+        if pd.isna(value):
+            return "unknown"
+        normalized = str(value).strip().casefold()
+        return normalized if normalized in MEAL_TYPE_CATEGORIES else "unknown"
+
+    type_records = frame.get(
+        "meal_type_records_at_timestamp", pd.Series(pd.NA, index=frame.index)
+    )
+    event_types: list[str] = []
+    for meal_type_value, records in zip(
+        meal_type.tolist(), type_records.tolist(), strict=True
+    ):
+        if isinstance(records, (list, tuple, set, frozenset)) and records:
+            normalized_records = {
+                normalized_event_type(value) for value in records
+            }
+            event_types.append(
+                next(iter(normalized_records))
+                if len(normalized_records) == 1
+                else "mixed"
+            )
+        else:
+            event_types.append(normalized_event_type(meal_type_value))
+
+    event_type_indexed = pd.Series(event_types, index=frame.index)
+    last_meal_type = event_type_indexed.where(meal_observed).ffill()
+    last_meal_time = pd.Series(timestamps, index=frame.index).where(
+        meal_observed
+    ).ffill()
+    meal_type_age = (
+        pd.Series(timestamps, index=frame.index) - last_meal_time
+    ).dt.total_seconds() / 60
+    feature_columns["meal_type_last_120m"] = last_meal_type.where(
+        meal_type_age <= 120, "none"
+    ).fillna("none").to_numpy()
 
     event_index = pd.Series(meal_observed.to_numpy(dtype=float), index=timestamps)
     for window_minutes in (15, 30, 60, 120):

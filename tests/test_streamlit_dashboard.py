@@ -82,6 +82,39 @@ def test_project_streamlit_theme_pins_high_contrast_light_mode() -> None:
     assert 'textColor = "#173A36"' in theme_section
 
 
+def test_demo_bundle_keeps_oof_artifact_out_of_protected_demo_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.app as dashboard
+
+    output_directories: list[Path] = []
+
+    def fake_run_smoke_test(output_dir, **kwargs):
+        output_path = Path(output_dir)
+        output_directories.append(output_path.resolve())
+        pd.DataFrame(
+            {
+                "patient_id": ["SYN-0001"],
+                "timestamp": [pd.Timestamp("2025-01-01")],
+                "y_true": [0],
+                "y_prob": [0.2],
+                "y_pred": [0],
+                "fold_id": ["SYN-0001"],
+            }
+        ).to_csv(output_path / "synthetic_oof_predictions.csv", index=False)
+        return {"synthetic_data": True}
+
+    monkeypatch.setattr(dashboard, "run_smoke_test", fake_run_smoke_test)
+    dashboard.load_demo_bundle.clear()
+
+    bundle = dashboard.load_demo_bundle(seed=42, n_participants=4, days=1)
+
+    assert len(output_directories) == 1
+    assert output_directories[0] != dashboard.DEMO_DIR.resolve()
+    assert not output_directories[0].exists()
+    assert bundle["oof"]["patient_id"].tolist() == ["SYN-0001"]
+
+
 def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> None:
     app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
     app = AppTest.from_file(str(app_path)).run(timeout=60)
@@ -91,6 +124,7 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         "Data & Model Overview",
         "Model Diagnostics",
         "Synthetic Glucose Timeline",
+        "New Synthetic Scenario",
         "Synthetic patient view (conceptual)",
     ]
     prediction_expander = _prediction_expander(app)
@@ -128,6 +162,28 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
     main_markdown = "\n".join(element.value for element in app.markdown)
     assert "Synthetic data status" not in main_markdown
     assert "Combined synthetic model inputs" not in main_markdown
+    assert any(
+        element.label == "Run synthetic scenario prediction"
+        for element in app.button
+    )
+    assert any(element.label == "Current glucose (mg/dL)" for element in app.number_input)
+    assert all(
+        next(element for element in app.checkbox if element.label == label).value is False
+        for label in (
+            "Heart rate measured",
+            "METs measured",
+            "Calories measured",
+            "Intensity measured",
+            "Steps measured",
+        )
+    )
+    assert any(
+        "Recent synthetic meal history" in element.value for element in app.markdown
+    )
+    assert any(
+        "latest meal type within" in element.value
+        for element in app.caption
+    )
     assert "Static predictors:" not in main_markdown
     assert "Dynamic predictors:" not in main_markdown
     assert "age_years_missing" not in main_markdown
@@ -213,6 +269,52 @@ def test_dashboard_renders_sections_warning_calibration_and_valid_bounds() -> No
         element for element in app.number_input if element.label == "Participants"
     )
     assert participants.min == 4
+
+
+def test_new_scenario_form_reports_invalid_timestamp() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=60)
+
+    next(
+        element
+        for element in app.text_input
+        if element.label == "Scenario timestamp (YYYY-MM-DD HH:MM)"
+    ).set_value("not-a-timestamp")
+    next(
+        element
+        for element in app.button
+        if element.label == "Run synthetic scenario prediction"
+    ).click().run(timeout=60)
+
+    assert not app.exception
+    assert any("Scenario input is invalid" in element.value for element in app.error)
+
+
+def test_new_scenario_form_displays_prediction_output() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app" / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=60)
+
+    next(
+        element
+        for element in app.button
+        if element.label == "Run synthetic scenario prediction"
+    ).click().run(timeout=60)
+
+    assert not app.exception
+    assert any(
+        element.label == "New-scenario model probability" for element in app.metric
+    )
+    assert any(
+        "Prediction horizon: 120 minutes" in element.value for element in app.caption
+    )
+    assert any(
+        "Inputs: glucose 140.0 mg/dL | heart rate missing" in element.value
+        for element in app.caption
+    )
+    assert any(
+        "no calibrated uncertainty interval is available" in element.value
+        for element in app.warning
+    )
 
 
 def test_patient_view_selectors_chart_and_probability_match_oof() -> None:
